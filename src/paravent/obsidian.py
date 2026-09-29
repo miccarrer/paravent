@@ -18,14 +18,27 @@ OUR_PLUGIN = "paravent"
 LEAKY_CORE_PLUGINS = {"sync": "Obsidian Sync", "publish": "Obsidian Publish"}
 
 
+PRESET = {
+    # New notes go into corpus/ rather than the vault root (outside the corpus).
+    "newFileLocation": "folder",
+    "newFileFolderPath": "corpus",
+    # Show every original (.docx, .eml…), not only the types Obsidian displays;
+    # a link to a hidden one would otherwise look unresolved.
+    "showUnsupportedFiles": True,
+}
+
+
 def preset(root: Path) -> None:
-    """New notes go into corpus/ rather than the vault root (outside the corpus)."""
+    """Add the settings Paravent needs, keeping any the user has already chosen."""
     config = root / CONFIG_DIR
     config.mkdir(exist_ok=True)
     app = config / "app.json"
-    if not app.exists():
-        app.write_text(json.dumps({"newFileLocation": "folder", "newFileFolderPath": "corpus"}, indent=2) + "\n",
-                       encoding="utf-8")
+    current = _read_json(app, {})
+    if not isinstance(current, dict):
+        return
+    merged = PRESET | current
+    if merged != current:
+        app.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def enclosing_vault(path: Path) -> Path | None:

@@ -51,8 +51,16 @@ def test_create_refuses_onedrive(tmp_path, monkeypatch):
 
 
 def test_create_presets_obsidian_vault(root):
-    assert '"newFileFolderPath": "corpus"' in (root / ".obsidian" / "app.json").read_text()
+    import json
+
+    app = root / ".obsidian" / "app.json"
+    assert json.loads(app.read_text()) == obsidian.PRESET
     assert obsidian.warnings(root) == []
+    app.write_text('{"showUnsupportedFiles": false, "strictLineBreaks": true}')
+    obsidian.preset(root)  # user choices are kept, missing keys added
+    settings = json.loads(app.read_text())
+    assert settings["showUnsupportedFiles"] is False and settings["strictLineBreaks"] is True
+    assert settings["newFileFolderPath"] == "corpus"
 
 
 def test_create_refuses_folder_inside_another_vault(tmp_path):
