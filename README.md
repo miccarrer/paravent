@@ -133,7 +133,12 @@ peut pas être remplacé.
 uv sync
 uv run pytest
 uv run python scripts/ci_update_scenario.py   # installation → conversion → mise à jour, isolé dans un dossier temporaire
+uv run python scripts/banc.py lignes --corpus ~/MonCorpus   # contrôler à l'œil des lignes « illisible ? »
 ```
+
+`scripts/banc.py` mesure la conversion sur de vrais documents sans les montrer à personne : ce
+qu'il écrit va dans `_banc/` à la racine du corpus (hors de `corpus/`, donc jamais dans le
+miroir), et ce qu'il affiche n'est fait que de chiffres.
 
 La CI (GitHub Actions) exécute les tests et ce scénario sous **Linux et Windows**. Pousser un
 tag `vX.Y.Z` publie la version, mais seulement si la CI passe sur les deux systèmes.
