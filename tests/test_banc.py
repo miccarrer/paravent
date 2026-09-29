@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 from paravent import corpus, extract
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -72,6 +74,8 @@ def test_references_are_prepared_then_compared(tmp_path, capsys):
     assert banc.main(["comparer", "--corpus", str(root), "--chaines", "actuel"]) == 0
     out = capsys.readouterr().out
     assert "Pages corrigées : 2 · texte 1 · OCR net 1" in out
+    assert banc.main(["comparer", "--corpus", str(root), "--chaines", "actuel", "--pages", "page-02"]) == 0
+    assert "Pages corrigées : 1 ·" in capsys.readouterr().out
     assert "Exempleville" not in out and "Caisse" not in out  # figures only
     row = next(line for line in out.splitlines() if line.startswith("actuel "))
     assert 0 < float(row.split()[1].replace(",", ".")) < 2  # a few characters wrong, no more
@@ -95,3 +99,34 @@ def test_blocks_are_read_row_by_row():
     title = ((100, 100, 900, 150), "paragraph_title", ["Relevé"])
     assert [item[2][0] for item in banc._reading_order([amount, label, title])] == [
         "Relevé", "Net imposable", "2 712,18 €"]
+
+
+def test_words_found_ignores_order_and_counts_inventions():
+    assert banc.words_found("un deux trois quatre", "quatre trois deux un") == (1.0, 0.0)
+    found, extra = banc.words_found("un deux trois quatre", "un deux inventé")
+    assert found == 0.5 and extra == pytest.approx(1 / 3)
+
+
+def test_vision_chain_sends_the_page_to_the_local_ollama(monkeypatch):
+    from paravent import ia
+
+    chain = banc.vision_chain("vision:glm-ocr:q8_0@1000")
+    assert (chain.vision, chain.vision_side) == ("glm-ocr:q8_0", 1000)
+    sent = []
+
+    def fake_request(config, path, payload):
+        sent.append((config.url, path, payload))
+        if path == "/api/show":
+            return {"capabilities": ["completion", "vision"]}
+        return {"message": {"content": "<think>hmm</think>Texte lu."}}
+
+    monkeypatch.setattr(ia, "load_config", lambda: None)
+    monkeypatch.setattr(ia, "_request", fake_request)
+    runner = banc.Runner()
+    from PIL import Image
+
+    assert runner.read_with_vision("glm-ocr:q8_0", Image.new("RGB", (20, 30), "white")) == "Texte lu."
+    (_, show, _), (url, chat, payload) = sent
+    assert (show, chat, url) == ("/api/show", "/api/chat", "http://localhost:11434")
+    assert payload["messages"][0]["content"] == "Text Recognition:" and "think" not in payload
+    assert payload["options"]["temperature"] == 0 and len(payload["messages"][0]["images"]) == 1

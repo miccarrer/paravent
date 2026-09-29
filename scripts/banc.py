@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import logging
+import os
 import random
 import re
 import statistics
@@ -339,6 +341,9 @@ class Chain:
     params: dict = field(default_factory=dict)
     tables: bool = False
     layout: bool = False
+    pdf_order: bool = False  # text layers read in the file's order, not rebuilt from positions
+    vision: str | None = None  # a vision model served by the local Ollama: it reads the whole page
+    vision_side: int | None = None  # longest side of the image sent, in pixels (None: as rendered)
 
 
 def chains() -> dict[str, Chain]:
@@ -346,9 +351,13 @@ def chains() -> dict[str, Chain]:
 
     medium = {"Det.model_type": ModelType.MEDIUM, "Rec.model_type": ModelType.MEDIUM}
     latin = {"Rec.ocr_version": OCRVersion.PPOCRV5, "Rec.lang_type": LangRec.LATIN, "Rec.model_type": ModelType.MOBILE}
+    full = {"Global.max_side_len": 5000}  # RapidOCR shrinks any image beyond 2000 px: an A4 page at 200 ppp too
     return {chain.name: chain for chain in [
-        Chain("actuel", "Paravent aujourd'hui (PP-OCRv6 small, 200 ppp)"),
-        Chain("300ppp", "la même, lue à 300 ppp", dpi=300),
+        Chain("actuel", "Paravent aujourd'hui (PP-OCRv6 small, 200 ppp réduits à ~170 par RapidOCR)"),
+        Chain("200-plein", "la même, sans la réduction à 2000 pixels", params=full),
+        Chain("300-plein", "lue à 300 ppp, sans réduction", dpi=300, params=full),
+        Chain("ordre-pdf", "actuel, mais couche texte dans l'ordre du fichier (pages texte seulement)",
+              pdf_order=True),
         Chain("v6-medium", "PP-OCRv6 medium (détection et lecture)", params=medium),
         Chain("latin", "lecture PP-OCRv5 latin", params=latin),
         Chain("tableaux", "actuel + tableaux (PP layout_table + SLANet+)", tables=True),
@@ -356,11 +365,26 @@ def chains() -> dict[str, Chain]:
     ]}
 
 
+# OCR models are trained on their own short instruction; general models get a strict one.
+VISION_PROMPTS = {"glm-ocr": "Text Recognition:"}
+TRANSCRIBE = ("Transcris exactement tout le texte imprimé de cette page, dans l'ordre de lecture. Ne corrige "
+              "rien, n'ajoute rien, ne résume pas. Les tableaux en Markdown (| a | b |). Réponds uniquement "
+              "par la transcription.")
+VISION_TIMEOUT = 900  # seconds for one page: a model spilling out of the GPU is slow
+
+
+def vision_chain(name: str) -> Chain:
+    """« vision:<model> », or « vision:<model>@<pixels> » to send a smaller image (fewer image tokens)."""
+    model, _, side = name.split(":", 1)[1].partition("@")
+    about = f"modèle de vision {model}, via l'Ollama local" + (f", image réduite à {side} px" if side else "")
+    return Chain(name, about, vision=model, vision_side=int(side) if side else None)
+
+
 class Runner:
     """Runs a chain on a page; engines and models are loaded once."""
 
     def __init__(self):
-        self.engines, self.models = {}, {}
+        self.engines, self.models, self.thinking = {}, {}, {}
 
     def ocr(self, chain: Chain):
         key = repr(sorted((k, str(v)) for k, v in chain.params.items()))
@@ -385,6 +409,12 @@ class Runner:
 
     def run(self, chain: Chain, root: Path, original: str, page: int) -> str:
         image = render_page(root, original, page, chain.dpi)
+        if chain.vision:
+            if chain.vision_side:
+                image.thumbnail((chain.vision_side, chain.vision_side), Image.Resampling.LANCZOS)
+            return self.read_with_vision(chain.vision, image)
+        if chain.pdf_order and (text := self.text_in_file_order(root, original, page)):
+            return text
         pieces = self.text_layer(root, original, page, chain.dpi)
         if pieces is None:
             pieces = [p for p in extract.ocr_pieces(image, self.ocr(chain)) if not extract.is_noise(p)]
@@ -398,6 +428,40 @@ class Runner:
             out = self.model("pp_layout_table")(array)
             blocks = [] if out.boxes is None else [(box, "table") for box in out.boxes]
         return self.assemble(array, pieces, blocks)
+
+    def read_with_vision(self, model: str, image: Image.Image) -> str:
+        import base64
+        import io
+
+        from paravent import ia
+
+        config = ia.load_config() or ia.Config("http://localhost:11434", model)
+        config = ia.Config(config.url, model, VISION_TIMEOUT)  # checked local before every request
+        if model not in self.thinking:
+            capabilities = ia._request(config, "/api/show", {"model": model}).get("capabilities", [])
+            self.thinking[model] = "thinking" in capabilities
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        prompt = VISION_PROMPTS.get(model.split(":")[0].split("/")[-1], TRANSCRIBE)
+        payload = {"model": model, "stream": False, "options": {"temperature": 0, "num_ctx": 16384},
+                   "messages": [{"role": "user", "content": prompt,
+                                 "images": [base64.b64encode(buffer.getvalue()).decode("ascii")]}]}
+        if self.thinking[model]:
+            payload["think"] = False
+        content = ia._request(config, "/api/chat", payload).get("message", {}).get("content", "")
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+    @staticmethod
+    def text_in_file_order(root: Path, original: str, page: int) -> str | None:
+        path = root / original
+        if path.suffix.lower() != ".pdf":
+            return None
+        pdf = pdfium.PdfDocument(path)
+        try:
+            text = extract._normalize(pdf[page - 1].get_textpage().get_text_bounded())
+            return text if len(text) >= extract.MIN_TEXT_CHARS else None
+        finally:
+            pdf.close()
 
     @staticmethod
     def text_layer(root: Path, original: str, page: int, dpi: int) -> list[layout.Piece] | None:
@@ -554,7 +618,14 @@ def errors(reference: str, candidate: str) -> tuple[float, float, float]:
             Levenshtein.distance(ref.split(), hyp.split()) / max(len(ref.split()), 1))
 
 
-def compare(root: Path, names: list[str] | None) -> int:
+def words_found(reference: str, candidate: str) -> tuple[float, float]:
+    """Order set aside: share of the reference's words found, share of the candidate's words in excess."""
+    ref, hyp = Counter(plain(reference).split()), Counter(plain(candidate).split())
+    common = sum((ref & hyp).values())
+    return common / max(sum(ref.values()), 1), 1 - common / max(sum(hyp.values()), 1)
+
+
+def compare(root: Path, names: list[str] | None, only: list[str] | None = None) -> int:
     folder = root / BENCH / REFERENCES
     catalogue = folder / "pages.json"
     if not catalogue.exists():
@@ -565,9 +636,12 @@ def compare(root: Path, names: list[str] | None) -> int:
         note = (folder / f"{entry['id']}.md").read_text(encoding="utf-8")
         if DONE_BOX.replace("[ ]", "[x]") not in note.replace("[X]", "[x]") or CUT not in note:
             continue
+        if only and entry["id"] not in only:
+            continue
         pages.append((entry, note.split(CUT, 1)[1].strip()))
     available = chains()
-    selected = [available[name] for name in (names or available)]
+    selected = [vision_chain(name) if name.startswith("vision:") else available[name]
+                for name in (names or available)]
     print(f"Pages corrigées : {len(pages)} · " + " · ".join(
         f"{kind} {sum(e['kind'] == kind for e, _ in pages)}" for kind in QUOTAS)
         + f" · caractères de référence : {sum(len(plain(ref)) for _, ref in pages)}")
@@ -583,7 +657,7 @@ def compare(root: Path, names: list[str] | None) -> int:
             text = runner.run(chain, root, entry["original"], entry["page"])
             reference_tables = markdown_tables(reference)
             rows.append((entry, errors(reference, text), table_score(reference_tables, markdown_tables(text)),
-                         time.perf_counter() - start, len(reference_tables)))
+                         time.perf_counter() - start, len(reference_tables), words_found(reference, text)))
         results[chain.name] = rows
         print(f"  {chain.name} : fait", flush=True)
     report_comparison(selected, results)
@@ -592,7 +666,8 @@ def compare(root: Path, names: list[str] | None) -> int:
 
 def report_comparison(selected: list[Chain], results: dict) -> None:
     pct = lambda value: f"{value * 100:.1f} %".replace(".", ",")
-    print("\nchaîne          err. car.  sans espaces  err. mots   tableaux (trouvés · cellules justes)   s/page")
+    print("\nchaîne                 err. car.  sans espaces  err. mots   mots retrouvés  mots en trop       tableaux   s/page")
+    print("                                                            (ordre ignoré)")
     for chain in selected:
         rows = results[chain.name]
         means = [statistics.mean(row[1][i] for row in rows) for i in range(3)]
@@ -600,18 +675,28 @@ def report_comparison(selected: list[Chain], results: dict) -> None:
         right, total = sum(row[2][1] for row in rows), sum(row[2][2] for row in rows)
         tables = sum(row[4] for row in rows)
         cells = f"{found}/{tables} · {pct(right / total)}" if total else "—"
-        print(f"{chain.name:14s} {pct(means[0]):>10s} {pct(means[1]):>13s} {pct(means[2]):>10s}   {cells:>36s}"
-              f" {statistics.mean(row[3] for row in rows):8.1f}")
+        found_words = statistics.mean(row[5][0] for row in rows)
+        extra_words = statistics.mean(row[5][1] for row in rows)
+        print(f"{chain.name:21s} {pct(means[0]):>10s} {pct(means[1]):>13s} {pct(means[2]):>10s}"
+              f" {pct(found_words):>15s} {pct(extra_words):>13s} {cells:>14s} {statistics.mean(row[3] for row in rows):8.1f}")
+    print("  tableaux : trouvés / dans la référence · cellules justes (même rangée, même colonne)")
     print("\nErreurs par caractère, page par page :")
-    print("page      nature         " + "".join(chain.name.rjust(14) for chain in selected))
+    print("page      nature         " + "".join(chain.name[-13:].rjust(14) for chain in selected))
     for index, (entry, *_rest) in enumerate(results[selected[0].name]):
         print(f"{entry['id']:9s} {entry['kind']:14s} "
               + "".join(pct(results[chain.name][index][1][0]).rjust(14) for chain in selected))
+    print("\nMots de la référence retrouvés (ordre ignoré), page par page :")
+    print("page      nature         " + "".join(chain.name[-13:].rjust(14) for chain in selected))
+    for index, (entry, *_rest) in enumerate(results[selected[0].name]):
+        print(f"{entry['id']:9s} {entry['kind']:14s} "
+              + "".join(pct(results[chain.name][index][5][0]).rjust(14) for chain in selected))
     for chain in selected:
         print(f"  {chain.name} : {chain.about}")
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.disable(logging.INFO)  # the models' loading messages
+    os.environ.setdefault("TQDM_DISABLE", "1")  # RapidTable's progress bar
     parser = argparse.ArgumentParser(prog="banc.py", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     lines = commands.add_parser("lignes", help="contrôler des lignes « illisible ? » à l'œil")
@@ -627,14 +712,17 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--ajouter", action="store_true", help="ajouter des pages à celles qui existent")
     comp = commands.add_parser("comparer", help="passer les pages corrigées dans chaque chaîne candidate")
     comp.add_argument("--corpus", type=Path, default=Path.cwd())
+    comp.add_argument("--pages", help="seulement ces pages, séparées par des virgules (ex. page-10,page-08)")
     comp.add_argument("--chaines", help="noms séparés par des virgules (défaut : toutes) : " + ", ".join(
-        ["actuel", "300ppp", "v6-medium", "latin", "tableaux", "mise-en-page"]))
+        ["actuel", "200-plein", "300-plein", "ordre-pdf", "v6-medium", "latin", "tableaux", "mise-en-page"])
+        + " ; et vision:<modèle> pour un modèle de vision de l'Ollama local (ex. vision:glm-ocr:q8_0)")
     args = parser.parse_args(argv)
     root = corpus.find_root(args.corpus)
     if args.command == "preparer":
         return write_references(root, args.nombre, args.graine, args.ajouter)
     if args.command == "comparer":
-        return compare(root, args.chaines.split(",") if args.chaines else None)
+        return compare(root, args.chaines.split(",") if args.chaines else None,
+                       args.pages.split(",") if args.pages else None)
     if args.compter:
         return count_check(root)
     return write_check(root, args.nombre, args.graine, args.remplacer)
