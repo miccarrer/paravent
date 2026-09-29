@@ -46,6 +46,7 @@ def dir_size(path: Path) -> int:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
     work = Path(tempfile.mkdtemp(prefix="paravent-scenario-"))
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     env.update(UV_TOOL_DIR=str(work / "tools"), UV_TOOL_BIN_DIR=str(work / "bin"),
@@ -95,7 +96,9 @@ def main() -> int:
     metrics["mise à jour"] = f"{time.monotonic() - start:.0f} s"
     if log_match:
         log = Path(log_match.group(1))
-        print("--- update log ---\n" + (log.read_text(encoding="utf-8", errors="replace") if log.exists() else "(absent)"))
+        for path in (log.with_name("update.ps1"), log):
+            content = path.read_text(encoding="utf-8-sig", errors="replace") if path.exists() else "(absent)"
+            print(f"--- {path.name} ---\n{content}")
     assert version == NEW, f"still on {version!r} after {UPDATE_TIMEOUT} s"
 
     report = "\n".join(f"| {name} | {value} |" for name, value in metrics.items())

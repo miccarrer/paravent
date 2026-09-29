@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -66,3 +67,12 @@ def test_install_command_keeps_current_python(tmp_path):
     command = update.install_command("uv", tmp_path / "p.whl")
     assert command[:4] == ["uv", "tool", "install", "--force"]
     assert command[command.index("--python") + 1] == f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def test_windows_script_quotes_paths_with_accents_and_apostrophes():
+    log = Path(r"C:\Users\Hélène d'Arc\AppData\Local\paravent\updates\update.log")
+    script = update.windows_update_script(["uv", "tool", "install", r"C:\Users\Hélène d'Arc\p.whl"], log, [12, 34])
+    assert "Wait-Process -Id 12,34 -Timeout 120" in script
+    assert r"'C:\Users\Hélène d''Arc\p.whl'" in script
+    assert r"Add-Content -Path 'C:\Users\Hélène d''Arc\AppData" in script
+    assert script.rstrip().endswith('Log "paravent-update-exit=$code"')

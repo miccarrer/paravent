@@ -138,25 +138,42 @@ def install(wheel: Path, uv: str) -> Path | None:
 
 def _install_deferred_windows(command: list[str], work_dir: Path) -> Path:
     log = work_dir / "update.log"
-    quoted = " ".join("'" + part.replace("'", "''") + "'" for part in command)
+    script = work_dir / "update.ps1"
     # Wait for this interpreter and for the uv launcher (paravent.exe) that
     # started it: both hold files the reinstall must replace.
-    pids = ",".join(str(pid) for pid in {os.getpid(), os.getppid()})
-    script = work_dir / "update.ps1"
-    script.write_text(
-        f"Wait-Process -Id {pids} -Timeout 120 -ErrorAction SilentlyContinue\n"
-        f"& {quoted} *> '{log}'\n"
-        f"Add-Content -Path '{log}' -Value \"paravent-update-exit=$LASTEXITCODE\"\n",
-        encoding="utf-8",
-    )
+    pids = sorted({os.getpid(), os.getppid()})
+    # Windows PowerShell 5.1 reads a BOM-less script as ANSI, which would
+    # mangle a non-ASCII profile path (C:\Users\Hélène\...): write a BOM.
+    script.write_text(windows_update_script(command, log, pids), encoding="utf-8-sig")
     log.unlink(missing_ok=True)
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    # No DETACHED_PROCESS: PowerShell without any console may die on start.
+    # A hidden console of its own (CREATE_NO_WINDOW) in a separate process
+    # group keeps it alive once Paravent exits.
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-        creationflags=flags,
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         close_fds=True,
     )
     return log
+
+
+def windows_update_script(command: list[str], log: Path, pids: list[int]) -> str:
+    def quote(value: object) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    return (
+        f"function Log($line) {{ Add-Content -Path {quote(log)} -Value $line -Encoding UTF8 }}\n"
+        'Log "started $(Get-Date -Format o)"\n'
+        f"Wait-Process -Id {','.join(map(str, pids))} -Timeout 120 -ErrorAction SilentlyContinue\n"
+        'Log "installing $(Get-Date -Format o)"\n'
+        f"$output = & {' '.join(map(quote, command))} 2>&1 | Out-String\n"
+        "$code = $LASTEXITCODE\n"
+        "Log $output\n"
+        'Log "paravent-update-exit=$code"\n'
+    )
 
 
 def new_download_dir() -> Path:
