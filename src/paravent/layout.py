@@ -23,6 +23,9 @@ LINE_GAP = 0.9
 # same type vary with ascenders and descenders, hence the margin.
 SIZE_RATIO = 1.5
 _LIST_ITEM = re.compile(r"^(?:[-–—•·*▪◦►]|\d{1,2}[.)°]|[a-zA-Z][.)])\s")
+# A row starting further right than this share of the text's width is outside the main
+# column (an address on the right, a centred title, a second column): never joined.
+SIDE_START = 0.25
 # Pieces of a row this far apart, in characters, are columns: a table's rows are never
 # joined, even when the last column reaches the right edge (amounts on a statement).
 COLUMN_GAP = 2
@@ -97,6 +100,8 @@ def paragraphs(pieces: list[Piece], render: Callable[[Piece, int], str] = lambda
     # Something further right (a date, a page number) only makes rows look shorter:
     # they stay apart, as they would without this rebuilding, rather than merge.
     right_edge = max(row.right for row in rows)
+    left_edge = min(row.left for row in rows)
+    side = left_edge + SIDE_START * (right_edge - left_edge)
     rendered = {}
     for number, piece in enumerate((piece for row in rows for piece in row.pieces), start=1):
         rendered[id(piece)] = render(piece, number)
@@ -105,7 +110,8 @@ def paragraphs(pieces: list[Piece], render: Callable[[Piece, int], str] = lambda
     previous = None
     for row in rows:
         text = " ".join(rendered[id(piece)] for piece in row.pieces)
-        if previous and _continues(previous, row, right_edge, line_height):
+        if previous and previous.left <= side and row.left <= side and _continues(previous, row, right_edge,
+                                                                                    line_height):
             hyphen = previous.text.endswith("-") and row.text[:1].islower()
             blocks[-1] += ("" if hyphen else " ") + text
         else:

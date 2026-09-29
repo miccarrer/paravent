@@ -59,3 +59,13 @@ def test_render_numbers_pieces_in_reading_order():
 
 def test_nothing_to_rebuild():
     assert layout.paragraphs([]) == ""
+
+
+def test_an_address_on_the_right_keeps_its_lines_apart():
+    # Its lines reach the right edge of the page, like full rows of a paragraph would.
+    pieces = [row("Caisse Exemple de Retraite, service des paiements", 0),
+              row("Madame Élodie Lefèvre", 2, left=300), row("12, rue des Écoles", 3, left=300),
+              row("Nous avons bien reçu votre demande et nous la", 5), row("traitons au plus vite.", 6)]
+    assert layout.paragraphs(pieces).split("\n\n") == [
+        "Caisse Exemple de Retraite, service des paiements", "Madame Élodie Lefèvre", "12, rue des Écoles",
+        "Nous avons bien reçu votre demande et nous la traitons au plus vite."]
