@@ -42,6 +42,18 @@ MonCorpus/
 - `paravent init` refuse un dossier synchronisé par OneDrive : les documents partiraient en clair
   dans le cloud.
 
+## Avec Obsidian (facultatif)
+
+Le dossier du corpus peut s'ouvrir tel quel comme coffre [Obsidian](https://obsidian.md) :
+rangement à la souris, recherche, et l'original PDF à côté du Markdown (le champ `original` des
+Propriétés est un lien). `.corpus/` y reste invisible. Paravent retrouve un document par ce champ,
+où que vous l'ayez déplacé.
+
+- `paravent init` règle Obsidian pour que les nouvelles notes aillent dans `corpus/`, et refuse
+  de créer un corpus à l'intérieur d'un autre coffre.
+- `paravent etat` avertit si le coffre a des plugins tiers (ils peuvent lire tous les documents),
+  ou si Obsidian Sync ou Publish y sont actifs.
+
 ## IA locale (facultative)
 
 Si une IA tourne sur la machine ou le réseau local ([Ollama](https://ollama.com)), `paravent

@@ -5,7 +5,7 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
-from . import corpus, extract, ia, ranger, update
+from . import corpus, extract, ia, obsidian, ranger, update
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,11 +89,14 @@ def _init(folder: Path, allow_onedrive: bool) -> int:
     print(f"Corpus créé dans {root}")
     print(f"  {corpus.ORIGINALS}/  copies des documents importés (ne pas modifier)")
     print(f"  {corpus.DOCUMENTS}/     vos documents en Markdown ; les nouveaux arrivent dans {corpus.INBOX}/")
+    print("Pour le parcourir avec Obsidian, ouvrez ce dossier comme coffre (sans y ajouter de plugins tiers).")
     return 0
 
 
 def _import(where: Path, sources: list[Path], retry_failed: bool) -> int:
     with corpus.Corpus(corpus.find_root(where)) as c:
+        for warning in obsidian.warnings(c.root):
+            print(f"⚠ {warning}")
         report = c.import_paths(sources, retry_failed=retry_failed, progress=print)
         print(f"Nouveaux : {len(report.added)} · déjà dans le corpus : {len(report.duplicates)}"
               f" · formats non pris en charge : {len(report.unsupported)}")
@@ -113,7 +116,9 @@ def _status(where: Path) -> int:
             print(f"\n[{corpus.STATUS_LABELS[document.status]}] {document.source_name}")
             print(f"  {document.detail}")
             if document.status == corpus.REVIEW:
-                print(f"  original : {document.original}\n  markdown : {document.markdown}")
+                print(f"  original : {document.original}\n  markdown : {document.markdown or 'introuvable'}")
+        for warning in obsidian.warnings(c.root):
+            print(f"\n⚠ {warning}")
         if counts[corpus.TODO]:
             print("\nDes documents restent à convertir : relancez « paravent import » pour reprendre.")
         waiting = ranger.inbox_files(c.inbox)

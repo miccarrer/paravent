@@ -12,6 +12,10 @@ interrupted import resumes where it stopped: first every source file is
 copied into ``originaux/`` and recorded as ``a_faire``; then each pending
 document is converted. Its Markdown path is recorded *before* the file is
 written, so a resumed conversion overwrites it instead of creating a twin.
+
+Once written, a Markdown file belongs to the user, who may move or rename it
+(in Obsidian, for instance). It is found again through its front matter,
+``original: "[[originaux/<hash>.pdf]]"``, not through the recorded path.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import extract
+from . import extract, obsidian
 
 FORMAT_VERSION = 1
 STATE_DIR = ".corpus"
@@ -158,7 +162,9 @@ class Corpus:
             status, detail = FAILED, f"{type(error).__name__} : {error}"
         else:
             status, detail = _review_status(pages)
-            front = (f"---\noriginal: {row['original']}\nnom_origine: {_yaml_str(row['source_name'])}\n"
+            link = f"[[{row['original']}]]"  # clickable in Obsidian's Properties
+            front = (f"---\noriginal: {_yaml_str(link)}\n"
+                     f"nom_origine: {_yaml_str(row['source_name'])}\n"
                      f"importe_le: {row['imported_at'][:10]}\n---\n\n")
             _write_atomic(self.root / markdown, front + body)
         with self.db:
@@ -175,19 +181,32 @@ class Corpus:
         return counts
 
     def documents(self, *statuses: str) -> list[Document]:
+        """Documents with their Markdown's current location (None if it is gone)."""
         query = "SELECT * FROM documents"
         if statuses:
             query += f" WHERE status IN ({', '.join('?' * len(statuses))})"
-        rows = self.db.execute(query + " ORDER BY imported_at, source_name", statuses)
-        return [Document(r["sha256"], r["source_name"], r["original"], r["markdown"], r["status"], r["detail"])
+        rows = self.db.execute(query + " ORDER BY imported_at, source_name", statuses).fetchall()
+        located = self.locate()
+        return [Document(r["sha256"], r["source_name"], r["original"],
+                         located[r["original"]].relative_to(self.root).as_posix() if r["original"] in located else None,
+                         r["status"], r["detail"])
                 for r in rows]
+
+    def locate(self) -> dict[str, Path]:
+        """Map each original (``originaux/…``) to the Markdown file that points at it."""
+        found = {}
+        for markdown in sorted(self.documents_dir.rglob("*.md")):
+            if original := original_of(markdown):
+                found.setdefault(original, markdown)
+        return found
 
     def folders(self) -> list[str]:
         """Existing folders under corpus/, relative, the inbox excluded."""
         return sorted(
             path.relative_to(self.documents_dir).as_posix()
             for path in self.documents_dir.rglob("*")
-            if path.is_dir() and INBOX not in path.relative_to(self.documents_dir).parts
+            if path.is_dir()
+            and not any(part == INBOX or part.startswith(".") for part in path.relative_to(self.documents_dir).parts)
         )
 
     def move(self, markdown: Path, folder: str, name: str) -> Path:
@@ -219,6 +238,10 @@ def create(root: Path, allow_onedrive: bool = False) -> Path:
         raise CorpusError(
             f"Ce dossier est synchronisé par OneDrive ({cloud}) : tous les documents partiraient en clair "
             "dans le cloud. Choisissez un dossier hors de OneDrive.")
+    if vault := obsidian.enclosing_vault(root):
+        raise CorpusError(
+            f"Ce dossier est à l'intérieur du coffre Obsidian {vault} : ses plugins et tout ce qui le lit "
+            "verraient vos documents. Créez le corpus ailleurs ; il sera son propre coffre.")
     if (root / STATE_DIR).exists():
         raise CorpusError(f"Il y a déjà un corpus dans {root}")
     if root.exists() and any(root.iterdir()):
@@ -230,6 +253,7 @@ def create(root: Path, allow_onedrive: bool = False) -> Path:
         db.executescript(SCHEMA)
         db.execute("INSERT INTO meta VALUES ('format', ?)", (str(FORMAT_VERSION),))
     db.close()
+    obsidian.preset(root)
     return root
 
 
@@ -251,6 +275,25 @@ def onedrive_folder(path: Path) -> Path | None:
         if parent.name.lower().startswith("onedrive"):
             return parent
     return None
+
+
+_FRONT_MATTER = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+_ORIGINAL = re.compile(r"^original:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def original_of(markdown: Path) -> str | None:
+    """The ``originaux/…`` path a Markdown file's front matter points at."""
+    try:
+        with open(markdown, encoding="utf-8") as file:
+            head = file.read(4096)
+    except (OSError, UnicodeDecodeError):
+        return None
+    front = _FRONT_MATTER.match(head)
+    value = front and _ORIGINAL.search(front.group(1))
+    if not value:
+        return None
+    target = value.group(1).strip("'\"").removeprefix("[[").removesuffix("]]").split("|")[0].strip()
+    return target if target.startswith(f"{ORIGINALS}/") else None
 
 
 # --- names ------------------------------------------------------------------

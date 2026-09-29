@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from paravent import corpus, extract
+from paravent import corpus, extract, obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -50,6 +50,29 @@ def test_create_refuses_onedrive(tmp_path, monkeypatch):
     assert corpus.create(tmp_path / "Nuage" / "MonCorpus", allow_onedrive=True)
 
 
+def test_create_presets_obsidian_vault(root):
+    assert '"newFileFolderPath": "corpus"' in (root / ".obsidian" / "app.json").read_text()
+    assert obsidian.warnings(root) == []
+
+
+def test_create_refuses_folder_inside_another_vault(tmp_path):
+    (tmp_path / "Notes" / ".obsidian").mkdir(parents=True)
+    with pytest.raises(corpus.CorpusError, match="coffre Obsidian"):
+        corpus.create(tmp_path / "Notes" / "Papiers" / "MonCorpus")
+
+
+def test_obsidian_warnings(root):
+    config = root / ".obsidian"
+    (config / "community-plugins.json").write_text('["paravent", "copilot"]')
+    (config / "core-plugins.json").write_text('{"file-explorer": true, "sync": true, "publish": false}')
+    found = obsidian.warnings(root)
+    assert len(found) == 2
+    assert "copilot" in found[0] and "paravent" not in found[0]
+    assert "Obsidian Sync" in found[1]
+    (config / "core-plugins.json").write_text('["publish"]')  # older list format
+    assert "Obsidian Publish" in obsidian.warnings(root)[1]
+
+
 def test_find_root_without_corpus(tmp_path):
     with pytest.raises(corpus.CorpusError):
         corpus.find_root(tmp_path)
@@ -67,7 +90,7 @@ def test_import_copies_deduplicates_and_converts(root, sources):
         originals = sorted((root / "originaux").iterdir())
         assert len(originals) == 2
         markdown = (root / "corpus" / "_a-ranger" / "courrier-scanne.md").read_text(encoding="utf-8")
-        assert markdown.startswith("---\noriginal: originaux/")
+        assert markdown.startswith('---\noriginal: "[[originaux/')
         assert 'nom_origine: "courrier-scanne.pdf"' in markdown
         assert "Lefèvre-Garçon" in markdown
 
@@ -129,6 +152,31 @@ def test_move_files_a_document_safely(root, sources):
 
         with pytest.raises(corpus.CorpusError, match="boîte d'arrivée"):
             c.move(moved, "_a-ranger", "x")
+
+
+def test_documents_are_found_again_after_a_manual_move(root, sources):
+    with corpus.Corpus(root) as c:
+        c.import_paths([sources / "convocation-native.pdf"])
+        target = root / "corpus" / "Rangé à la main" / "convocation.md"
+        target.parent.mkdir()
+        (root / "corpus" / "_a-ranger" / "convocation-native.md").rename(target)
+        document, = c.documents()
+        assert document.markdown == "corpus/Rangé à la main/convocation.md"
+        target.unlink()
+        assert c.documents()[0].markdown is None
+
+
+@pytest.mark.parametrize(("front", "expected"), [
+    ('original: "[[originaux/ab.pdf]]"', "originaux/ab.pdf"),
+    ("original: [[originaux/ab.pdf|scan]]", "originaux/ab.pdf"),
+    ("original: originaux/ab.pdf", "originaux/ab.pdf"),
+    ('original: "[[ailleurs/ab.pdf]]"', None),
+    ("titre: x", None),
+])
+def test_original_of(tmp_path, front, expected):
+    markdown = tmp_path / "doc.md"
+    markdown.write_text(f"---\n{front}\n---\n\ntexte\n", encoding="utf-8")
+    assert corpus.original_of(markdown) == expected
 
 
 def test_move_never_overwrites(root, sources):
