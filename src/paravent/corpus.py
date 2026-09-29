@@ -26,7 +26,7 @@ import re
 import shutil
 import sqlite3
 import stat
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +39,10 @@ DB_NAME = "paravent.db"
 ORIGINALS = "originaux"
 DOCUMENTS = "corpus"
 INBOX = "_a-ranger"
+RECONVERSIONS = "reconversions"  # in .corpus/: the previous versions, one folder per run
+# A Markdown file written later than its conversion (plus this margin, for file
+# systems that round times) has been edited: a reconversion leaves it alone.
+EDIT_MARGIN = 3  # seconds
 
 TODO, DONE, FAILED, REVIEW = "a_faire", "fait", "echec", "a_verifier"
 STATUS_LABELS = {TODO: "à faire", DONE: "fait", FAILED: "échec", REVIEW: "à vérifier"}
@@ -85,6 +89,17 @@ class ImportReport:
     duplicates: list[Path] = field(default_factory=list)
     unsupported: list[Path] = field(default_factory=list)
     converted: dict[str, int] = field(default_factory=lambda: {DONE: 0, REVIEW: 0, FAILED: 0})
+
+
+@dataclass
+class ReconvertReport:
+    pending: int = 0
+    already_done: int = 0  # by an interrupted run being resumed
+    edited: list[Path] = field(default_factory=list)
+    missing: int = 0
+    converted: dict[str, int] = field(default_factory=lambda: {DONE: 0, REVIEW: 0})
+    failed: list[Path] = field(default_factory=list)  # left as they were
+    backup: Path | None = None
 
 
 @dataclass
@@ -186,7 +201,7 @@ class Corpus:
                 (digest, name, source_path, original.as_posix(), parent, TODO, _now()))
         return True
 
-    def _convert(self, row: sqlite3.Row, on_page: Callable[[int, int], None]) -> str:
+    def _convert(self, row: Mapping, on_page: Callable[[int, int], None]) -> str:
         markdown = row["markdown"]
         if markdown is None:
             stem = safe_filename(Path(row["source_name"]).stem)
@@ -211,6 +226,71 @@ class Corpus:
             self.db.execute("UPDATE documents SET status = ?, detail = ?, converted_at = ? WHERE sha256 = ?",
                             (status, detail, _now(), row["sha256"]))
         return status
+
+    # --- reconversion ---------------------------------------------------------
+
+    def reconvert(self, dry_run: bool = False, progress: Progress | None = None) -> ReconvertReport:
+        """Convert again, with the current code, every document whose Markdown nobody has edited.
+
+        The Markdown is rewritten where it is now (moved or renamed, it stays so); the previous
+        version is kept in .corpus/reconversions/<run>/. An interrupted run resumes where it stopped.
+        """
+        progress = progress or Progress()
+        report = ReconvertReport()
+        run, done = self._reconversion_run(create=not dry_run)
+        located = self.locate()
+        candidates = []
+        for row in self.db.execute("SELECT * FROM documents WHERE status IN (?, ?) ORDER BY imported_at, source_name",
+                                   (DONE, REVIEW)).fetchall():
+            path = located.get(row["original"])
+            if path is None:
+                report.missing += 1
+            elif row["sha256"][:16] in done:
+                report.already_done += 1
+            elif _edited(path, row["converted_at"]):
+                report.edited.append(path)
+            else:
+                candidates.append((row, path))
+        report.pending, report.backup = len(candidates), run
+        if dry_run:
+            return report
+        for number, (row, path) in enumerate(candidates, start=1):
+            progress.document(number, len(candidates), row["source_name"])
+            markdown = path.relative_to(self.root).as_posix()
+            shutil.copyfile(path, run / f"{row['sha256'][:16]}.md")
+            with self.db:
+                self.db.execute("UPDATE documents SET markdown = ? WHERE sha256 = ?", (markdown, row["sha256"]))
+            status = self._convert({**row, "markdown": markdown}, progress.page)
+            if status == FAILED:  # the previous Markdown is still there: so is its state
+                with self.db:
+                    self.db.execute("UPDATE documents SET status = ?, detail = ?, converted_at = ? WHERE sha256 = ?",
+                                    (row["status"], row["detail"], row["converted_at"], row["sha256"]))
+                report.failed.append(path)
+            else:
+                if status == REVIEW and row["status"] == DONE and row["detail"]:
+                    # Ticked in « À vérifier.md » (done, with the reason it was doubtful): stays done.
+                    with self.db:
+                        self.db.execute("UPDATE documents SET status = ? WHERE sha256 = ?", (DONE, row["sha256"]))
+                    status = DONE
+                report.converted[status] += 1
+            with open(run / "faits", "a", encoding="utf-8") as done_list:
+                done_list.write(row["sha256"][:16] + "\n")
+            progress.converted(status)
+        (run / "terminee").write_text(_now(), encoding="utf-8")
+        return report
+
+    def _reconversion_run(self, create: bool) -> tuple[Path | None, set[str]]:
+        """The interrupted run to resume, or a new one: its folder and the documents it has done."""
+        runs = self.root / STATE_DIR / RECONVERSIONS
+        for run in sorted(runs.glob("*"), reverse=True):
+            if run.is_dir() and not (run / "terminee").exists():
+                done = run / "faits"
+                return run, set(done.read_text(encoding="utf-8").split()) if done.exists() else set()
+        if not create:
+            return None, set()
+        run = runs / _now()[:19].replace(":", "-")
+        run.mkdir(parents=True, exist_ok=True)
+        return run, set()
 
     def mark_checked(self, prefix: str) -> int:
         """A doubtful document, compared with its original by the user, is done."""
@@ -394,6 +474,12 @@ def _review_status(pages: list[extract.Page]) -> tuple[str, str | None]:
         elif page.min_confidence is not None and page.min_confidence < extract.LOW_CONFIDENCE:
             reasons.append(f"page {page.number} : confiance OCR {page.min_confidence:.2f}")
     return (REVIEW, " ; ".join(reasons)) if reasons else (DONE, None)
+
+
+def _edited(markdown: Path, converted_at: str | None) -> bool:
+    if not converted_at:
+        return True
+    return markdown.stat().st_mtime > datetime.fromisoformat(converted_at).timestamp() + EDIT_MARGIN
 
 
 def _sha256(path: Path) -> str:

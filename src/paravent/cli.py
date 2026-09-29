@@ -38,6 +38,10 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("--reessayer", action="store_true", help="reconvertir aussi les documents en échec")
 
     commands.add_parser("etat", parents=[in_corpus], help="où en sont les documents importés")
+    rec = commands.add_parser("reconvertir", parents=[in_corpus],
+                              help="refaire la conversion des documents dont le Markdown n'a pas été modifié")
+    rec.add_argument("--essai", action="store_true", help="compter seulement, sans rien réécrire")
+
     commands.add_parser("mesures", parents=[in_corpus],
                         help="chiffres sur la conversion, sans aucun nom : partageables tels quels")
 
@@ -66,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _status(args.corpus)
             case "mesures":
                 return _measures(args.corpus)
+            case "reconvertir":
+                return _reconvert(args.corpus, dry_run=args.essai)
             case "ranger":
                 return _file(args.corpus, use_ia=not args.sans_ia)
             case "ia":
@@ -208,6 +214,29 @@ def _sync_checklist(c: corpus.Corpus) -> None:
     remaining = c.counts()
     if remaining[corpus.REVIEW] or remaining[corpus.FAILED]:
         print(f"Liste à cocher dans Obsidian : « {review.CHECKLIST} », à la racine du corpus.")
+
+
+def _reconvert(where: Path, dry_run: bool) -> int:
+    with corpus.Corpus(corpus.find_root(where)) as c:
+        plan = c.reconvert(dry_run=True)
+        if plan.already_done:
+            print(f"Reprise de la reconversion interrompue : {plan.already_done} document(s) déjà refaits.")
+        print(f"À reconvertir : {plan.pending} · modifiés depuis leur conversion, laissés tels quels :"
+              f" {len(plan.edited)} · Markdown introuvable : {plan.missing}")
+        for path in plan.edited:
+            print(f"  laissé : {path.relative_to(c.root).as_posix()}")
+        if dry_run or not plan.pending:
+            return 0
+        progress = _ImportProgress()
+        report = c.reconvert(progress=progress)
+        converted = report.converted
+        print(f"Reconversion : {converted[corpus.DONE]} fait · {converted[corpus.REVIEW]} à vérifier"
+              f" · {len(report.failed)} en échec" + progress.summary())
+        for path in report.failed:
+            print(f"  échec, laissé tel quel : {path.relative_to(c.root).as_posix()}")
+        print(f"Versions précédentes : {report.backup.relative_to(c.root).as_posix()}/")
+        _sync_checklist(c)
+        return 1 if report.failed else 0
 
 
 def _measures(where: Path) -> int:

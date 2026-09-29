@@ -19,6 +19,7 @@ cd ~/MonCorpus
 paravent import ~/Téléchargements/scans    # fichiers ou dossiers (PDF, images, Word, e-mails)
 paravent etat                              # à faire · fait · échec · à vérifier
 paravent mesures                           # chiffres sur la conversion, sans aucun nom
+paravent reconvertir                       # refait la conversion après une mise à jour (--essai : compter)
 paravent ranger                            # range les documents arrivés dans corpus/_a-ranger
 paravent convert courrier.pdf -o courrier.md   # un document seul, hors corpus
 paravent update                            # vérifie et installe la dernière version
@@ -64,6 +65,12 @@ MonCorpus/
   concentration par document) : on peut les partager pour se faire aider sans rien dévoiler des
   documents.
 - Un import interrompu reprend là où il s'était arrêté : relancez la même commande.
+- Après une mise à jour qui améliore la conversion, `paravent reconvertir` refait les documents
+  **dont le Markdown n'a pas été modifié** depuis sa conversion (un fichier déplacé ou renommé
+  compte comme intact ; un fichier retouché est laissé tel quel, et listé). Le Markdown est
+  réécrit là où il se trouve, l'ancienne version est gardée dans `.corpus/reconversions/`, et
+  un document coché dans `À vérifier.md` reste « fait ». Interrompue, la commande reprend là
+  où elle s'était arrêtée.
 - `paravent init` refuse un dossier synchronisé par OneDrive : les documents partiraient en clair
   dans le cloud.
 

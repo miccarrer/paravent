@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -247,3 +248,103 @@ def test_move_never_overwrites(root, sources):
 ])
 def test_safe_filename(name, expected):
     assert corpus.safe_filename(name) == expected
+
+
+# --- reconversion -----------------------------------------------------------------
+
+@pytest.fixture
+def three_documents(root, tmp_path, monkeypatch):
+    """Three documents converted by an « old » version; returns a function switching to the new one."""
+    for number, name in enumerate(("a.pdf", "b.pdf", "c.pdf"), start=1):
+        (tmp_path / name).write_bytes(b"x" * number)
+    version = {"text": "ancienne conversion"}
+
+    def fake(path, on_page=None):
+        return [extract.Page(1, f"{version['text']} {path.stat().st_size}", "text")]
+
+    monkeypatch.setattr(extract, "extract_pages", fake)
+    with corpus.Corpus(root) as c:
+        c.import_paths(sorted(tmp_path.glob("*.pdf")))
+    return version
+
+
+def markdown_of(root, name):
+    return next(root.rglob(name)).read_text(encoding="utf-8")
+
+
+def age(path, seconds):
+    """As if the file had been written ``seconds`` after its conversion."""
+    stamp = path.stat().st_mtime + seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_reconvert_rewrites_untouched_markdown_where_it_is_now(root, three_documents):
+    inbox = root / "corpus" / "_a-ranger"
+    (root / "corpus" / "Rangés").mkdir()
+    (inbox / "a.md").rename(root / "corpus" / "Rangés" / "facture.md")  # moved in Obsidian: still untouched
+    edited = inbox / "b.md"
+    edited.write_text(edited.read_text(encoding="utf-8") + "\nMa note.\n", encoding="utf-8")
+    age(edited, 60)
+    (inbox / "c.md").unlink()
+    three_documents["text"] = "nouvelle conversion"
+    with corpus.Corpus(root) as c:
+        trial = c.reconvert(dry_run=True)
+        assert (trial.pending, [p.name for p in trial.edited], trial.missing) == (1, ["b.md"], 1)
+        assert not (root / ".corpus" / "reconversions").exists()  # nothing written
+
+        report = c.reconvert()
+        assert report.converted == {"fait": 1, "a_verifier": 0} and report.failed == []
+        assert "nouvelle conversion 1" in markdown_of(root, "facture.md")
+        assert "Ma note." in markdown_of(root, "b.md") and "ancienne conversion" in markdown_of(root, "b.md")
+        backup, = report.backup.glob("*.md")
+        assert "ancienne conversion 1" in backup.read_text(encoding="utf-8")
+        assert c.documents()[0].markdown == "corpus/Rangés/facture.md"
+        assert (report.backup / "terminee").is_file()
+
+
+def test_reconvert_keeps_ticks_and_survives_failures(root, three_documents, monkeypatch):
+    with corpus.Corpus(root) as c:
+        a, b, _ = c.documents()
+        c.db.execute("UPDATE documents SET status = 'fait', detail = 'page 1 vide ou illisible'"
+                     " WHERE sha256 = ?", (a.sha256,))  # ticked by the user
+        c.db.commit()
+        doubtful = [extract.Page(1, "", "ocr", 0.0)]
+        monkeypatch.setattr(extract, "extract_pages", lambda path, on_page=None:
+                            (_ for _ in ()).throw(ValueError("cassé")) if path.stat().st_size == 3 else doubtful)
+        report = c.reconvert()
+        assert report.converted == {"fait": 1, "a_verifier": 1} and len(report.failed) == 1
+        statuses = {d.source_name: d.status for d in c.documents()}
+        assert statuses == {"a.pdf": "fait", "b.pdf": "a_verifier", "c.pdf": "fait"}  # c: failed, state kept
+        assert "ancienne conversion 3" in markdown_of(root, "c.md")
+
+
+def test_interrupted_reconversion_resumes(root, three_documents, monkeypatch):
+    calls = []
+
+    def crash_on_second(path, on_page=None):
+        calls.append(path)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return [extract.Page(1, "nouvelle conversion", "text")]
+
+    monkeypatch.setattr(extract, "extract_pages", crash_on_second)
+    with corpus.Corpus(root) as c, pytest.raises(KeyboardInterrupt):
+        c.reconvert()
+    with corpus.Corpus(root) as c:
+        report = c.reconvert()
+        assert (report.already_done, report.pending) == (1, 2)
+        assert len(calls) == 4
+        assert len(list((root / ".corpus" / "reconversions").iterdir())) == 1  # the same run, resumed
+        report = c.reconvert(dry_run=True)  # finished: a new run would redo them all
+        assert (report.already_done, report.pending) == (0, 3)
+
+
+def test_cli_reconvertir(root, three_documents, capsys):
+    from paravent import cli
+
+    three_documents["text"] = "nouvelle conversion"
+    assert cli.main(["reconvertir", "--corpus", str(root), "--essai"]) == 0
+    assert "À reconvertir : 3 · modifiés depuis leur conversion, laissés tels quels : 0" in capsys.readouterr().out
+    assert cli.main(["reconvertir", "--corpus", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "Reconversion : 3 fait · 0 à vérifier · 0 en échec" in out and "Versions précédentes : .corpus/" in out
