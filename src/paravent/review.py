@@ -3,8 +3,10 @@
 ``paravent mesures`` prints figures only (counts, weights, ranges), never a
 name nor a word of a document, so that its output can be pasted to a cloud
 AI or to a helper without disclosing anything. They are computed from the
-page markers the conversion writes (``<!-- page N · ocr · confiance min
-0.93 -->``), so the database schema is left as it is.
+page markers the conversion writes (``<!-- page N · ocr · 40 lignes ·
+confiance min 0.93 -->``) and from the flags on doubtful lines, so the
+database schema is left as it is. Markdown converted before paragraphs were
+rebuilt (one OCR line per paragraph, no line count) is still understood.
 
 ``À vérifier.md``, at the root of the vault (outside ``corpus/``, hence never
 in the mirror), lists the doubtful documents with a box to tick once the
@@ -42,9 +44,12 @@ FLAGGED_CONFIDENCE_RANGES = [(0.50, "< 0,50"), (0.70, "0,50–0,70"), (float("in
 EDGE = 0.15  # first and last 15 % of a page's lines: its top and bottom
 SHARE_RANGES = [(0.05, "< 5 %"), (0.20, "5–20 %"), (float("inf"), "> 20 %")]
 
-_PAGE = re.compile(r"^<!-- page \d+ · (\w+)(?: · confiance min ([\d.]+))? -->$", re.MULTILINE)
+_PAGE = re.compile(r"^<!-- page \d+ · (\w+)(?: · (\d+) lignes)?(?: · confiance min ([\d.]+))? -->$", re.MULTILINE)
 _UNPAGED = re.compile(rf"^<!-- ({'|'.join(sorted(extract.UNPAGED))}) -->$", re.MULTILINE)
-_ILLEGIBLE = re.compile(r"<!-- illisible \? confiance ([\d.]+) -->")
+# Since paragraphs are rebuilt: ==text==<!-- illisible ? confiance 0.61 · ligne 12/40 -->.
+_FLAGGED = re.compile(r"==(.*?)==<!-- illisible \? confiance ([\d.]+) · ligne (\d+)/(\d+) -->", re.DOTALL)
+# Before: one OCR line per paragraph, the comment at its end.
+_OLD_FLAG = re.compile(r"<!-- illisible \? confiance ([\d.]+) -->")
 _PARAGRAPHS = re.compile(r"\n\s*\n")
 _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -80,18 +85,25 @@ def pages_of(markdown: str) -> list[Page]:
     pages = []
     for marker, following in zip(markers, [*markers[1:], None]):
         body = markdown[marker.end():following.start() if following else len(markdown)]
-        confidence = marker.group(2)
-        page = Page(marker.group(1), len(_COMMENT.sub("", body).strip()), float(confidence) if confidence else None)
-        if page.method == "ocr":
-            lines = [line for line in _PARAGRAPHS.split(body) if _COMMENT.sub("", line).strip()]
-            page.lines = len(lines)
-            for index, line in enumerate(lines):
-                if flag := _ILLEGIBLE.search(line):
-                    text = _COMMENT.sub("", line).strip()
-                    page.flagged.append(Flagged(len(text), float(flag.group(1)), index / max(len(lines) - 1, 1),
-                                                any(char.isalpha() for char in text)))
+        method, lines, confidence = marker.groups()
+        page = Page(method, len(_COMMENT.sub("", body).replace("==", "").strip()),
+                    float(confidence) if confidence else None)
+        if method == "ocr" and lines:
+            page.lines = int(lines)
+            page.flagged = [_flagged(text, score, (int(line) - 1) / max(int(total) - 1, 1))
+                            for text, score, line, total in _FLAGGED.findall(body)]
+        elif method == "ocr":
+            paragraphs = [line for line in _PARAGRAPHS.split(body) if _COMMENT.sub("", line).strip()]
+            page.lines = len(paragraphs)
+            page.flagged = [_flagged(_COMMENT.sub("", line), flag.group(1), index / max(len(paragraphs) - 1, 1))
+                            for index, line in enumerate(paragraphs) if (flag := _OLD_FLAG.search(line))]
         pages.append(page)
     return pages
+
+
+def _flagged(text: str, score: str, position: float) -> Flagged:
+    text = text.strip()
+    return Flagged(len(text), float(score), position, any(char.isalpha() for char in text))
 
 
 @dataclass

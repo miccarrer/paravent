@@ -31,6 +31,15 @@ def fake_pages(tmp_path, monkeypatch, documents):
     return [tmp_path / name for name in documents]
 
 
+def test_flags_inside_rebuilt_paragraphs_are_read_back():
+    markdown = extract.to_markdown([extract.Page(
+        1, "début ==§==<!-- illisible ? confiance 0.41 · ligne 1/40 --> suite ==Montant dû==<!-- illisible ?"
+           " confiance 0.66 · ligne 40/40 -->", "ocr", 0.41, lines=40)])
+    page, = review.pages_of(markdown)
+    assert (page.lines, page.chars) == (40, len("début § suite Montant dû"))
+    assert page.flagged == [review.Flagged(1, 0.41, 0.0, False), review.Flagged(10, 0.66, 1.0, True)]
+
+
 def test_pages_are_read_back_from_markers():
     markdown = extract.to_markdown([
         extract.Page(1, "x" * 150, "text"),
@@ -49,15 +58,16 @@ def test_measures_of_real_conversions(root):
         c.import_paths([FIXTURES])
         m = review.measure(c)
         assert {kind: sum(counts.values()) for kind, counts in m.formats.items()} == \
-            {"pdf": 4, "png": 1, "docx": 1, "eml": 1}  # the e-mail's attachment is a PDF
+            {"pdf": 6, "png": 1, "docx": 1, "eml": 1}  # the e-mail's attachment is a PDF
         assert m.attachments == 1 and m.missing_originals == 0
-        assert m.placement == {"à ranger": 7}
-        assert m.kinds == {"texte": 2, "OCR": 2, "blanc": 1, "docx": 1, "eml": 1}
-        assert m.pages == {"text": 2, "ocr": 2, "blanches": 1}
+        assert m.placement == {"à ranger": 9}
+        assert m.kinds == {"texte": 3, "OCR": 3, "blanc": 1, "docx": 1, "eml": 1}
+        assert m.pages == {"text": 3, "ocr": 3, "blanches": 1}
+        assert (m.ocr_lines, m.illegible_lines) == (30, 0)  # counted from the page markers
         lines = review.report(m)
-        assert lines[0] == "Documents : 7 (dont 1 pièce(s) jointe(s) de mails)"
+        assert lines[0] == "Documents : 9 (dont 1 pièce(s) jointe(s) de mails)"
         # Figures only: no name from the corpus shows up.
-        names = ("convocation", "courrier", "bail", "verso", ".pdf", "_a-ranger")
+        names = ("convocation", "courrier", "paragraphes", "bail", "verso", ".pdf", "_a-ranger")
         assert not any(name in "\n".join(lines) for name in names)
 
 

@@ -39,9 +39,15 @@ MonCorpus/
 - Un document Word (`.docx`) garde ses titres, listes et tableaux. Un e-mail (`.eml`) donne
   ses en-têtes (de, à, date, objet) et son texte ; chaque pièce jointe devient un document à part,
   avec un lien vers le mail d'origine (`piece_jointe_de`).
-- Chaque page est précédée d'un repère `<!-- page N · ocr · confiance min 0.94 -->`. Une ligne
-  que l'OCR lit mal est signalée comme telle, avec sa confiance ; elle n'est ni gardée sans
-  avertissement, ni jetée (RapidOCR écarte d'ordinaire les lignes sous 0,5 : pas ici). Un
+- Les lignes d'un même paragraphe sont recollées, d'après leur place sur la page : une ligne
+  continue la précédente quand elle la suit de près et que son premier mot n'aurait pas tenu au
+  bout. Une adresse, une liste, un champ de formulaire (« IBAN : … ») ou une ligne de tableau
+  restent à part.
+- Chaque page est précédée d'un repère `<!-- page N · ocr · 40 lignes · confiance min 0.94 -->`.
+  Un passage que l'OCR lit mal est **surligné** (`==…==`, en jaune dans Obsidian) et suivi de sa
+  confiance et de sa place dans la page (`<!-- illisible ? confiance 0.61 · ligne 12/40 -->`) ;
+  il n'est ni gardé sans avertissement, ni jeté (RapidOCR écarte d'ordinaire les lignes sous
+  0,5 : pas ici). Un
   document qui a une page vide ou peu sûre passe « à vérifier ». Une page blanche (un verso) est
   reconnue comme telle et ne compte pas : il faut que l'OCR n'y lise rien et qu'elle n'ait
   presque pas d'encre, si bien qu'une signature ou un mot au crayon la laissent « à vérifier ».

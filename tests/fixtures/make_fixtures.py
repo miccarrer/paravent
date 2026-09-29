@@ -2,8 +2,9 @@
 
     uv run python tests/fixtures/make_fixtures.py [/path/to/LiberationSerif-Regular.ttf]
 
-Without the font, the scanned letter and the photo are left as they are (the
-blank verso needs none).
+Without the font, the scanned letters, the photo and the wrapped native letter
+are left as they are (the blank verso needs none). Pillow dates the PDFs it
+writes: restore with git the ones that were not meant to change.
 The outputs are committed, so the tests need neither this script nor the font.
 """
 
@@ -33,6 +34,36 @@ LETTER = [
     "Veuillez agréer, Madame, l'expression de nos salutations distinguées.",
 ]
 
+# A letter whose paragraphs run over several lines: for rebuilding paragraphs.
+WRAPPED_TITLE = "Mutuelle Exemple Santé"
+WRAPPED_HEAD = ["Madame Élodie Lefèvre-Garçon", "12, rue des Écoles", "99000 Exempleville", "",
+                "Objet : remboursement de vos frais de santé", ""]
+WRAPPED_BODY = [
+    "Madame, nous avons bien reçu votre demande de remboursement du 3 mars. Après examen de votre dossier, "
+    "nous vous confirmons la prise en charge de vos frais à hauteur de soixante-dix pour cent du tarif de "
+    "convention, soit un montant de 45,50 € qui sera versé sur votre compte sous huit jours.",
+    ["Pièces reçues :", "– facture de la pharmacie du 3 mars", "– ordonnance du docteur Exemple"],
+    "Nous restons à votre disposition pour tout renseignement complémentaire. Veuillez agréer, Madame, "
+    "l'expression de nos salutations distinguées.",
+]
+
+
+def wrapped_lines(font: ImageFont.FreeTypeFont, width: float) -> list[str]:
+    """Wrapped like a word processor does: a word goes to the next line when it does not fit."""
+    lines = list(WRAPPED_HEAD)
+    for block in WRAPPED_BODY:
+        if isinstance(block, list):
+            lines += block
+        else:
+            for word in block.split():
+                if lines[-1] and font.getlength(f"{lines[-1]} {word}") <= width:
+                    lines[-1] += f" {word}"
+                else:
+                    lines.append(word)
+        lines.append("")
+    return lines
+
+
 NATIVE = [
     "Pôle Exemple - Agence de Exempleville",
     "Convocation à un entretien le 12 février à 9 h 30.",
@@ -53,8 +84,23 @@ def scanned_letter(font_path: str) -> Image.Image:
     font = ImageFont.truetype(font_path, 38)
     for index, line in enumerate(LETTER):
         draw.text((140, 120 + 70 * index), line, font=font, fill=20)
-    # Look like a scan: slight skew, blur and speckles.
-    rng = random.Random(1)
+    return scan_look(image, random.Random(1))
+
+
+def scanned_wrapped_letter(font_path: str) -> Image.Image:
+    width, height = 1654, 1700
+    image = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(image)
+    draw.text((140, 110), WRAPPED_TITLE, font=ImageFont.truetype(font_path, 60), fill=20)
+    font = ImageFont.truetype(font_path, 38)
+    for index, line in enumerate(wrapped_lines(font, 1100)):
+        draw.text((140, 230 + 58 * index), line, font=font, fill=20)
+    return scan_look(image, random.Random(3))
+
+
+def scan_look(image: Image.Image, rng: random.Random) -> Image.Image:
+    """Slight skew, blur and speckles."""
+    width, height = image.size
     image = image.rotate(0.8, fillcolor=255, resample=Image.Resampling.BICUBIC)
     image = image.filter(ImageFilter.GaussianBlur(0.8))
     pixels = image.load()
@@ -153,8 +199,14 @@ def main() -> None:
         scan = scanned_letter(sys.argv[1])
         scan.convert("RGB").save(HERE / "courrier-scanne.pdf", resolution=200, quality=70)
         scan.crop((100, 80, 1300, 380)).save(HERE / "courrier-photo.png", optimize=True)
+        scanned_wrapped_letter(sys.argv[1]).convert("RGB").save(HERE / "paragraphes-scanne.pdf",
+                                                                 resolution=200, quality=70)
+        # Liberation Sans has Helvetica's widths: the text layer wraps where Helvetica would.
+        sans = ImageFont.truetype(str(Path(sys.argv[1]).with_name("LiberationSans-Regular.ttf")), 14)
+        (HERE / "paragraphes-natif.pdf").write_bytes(native_pdf([WRAPPED_TITLE, "", *wrapped_lines(sans, 450)]))
     blank_verso().save(HERE / "verso-blanc.pdf", resolution=200, quality=50)
     (HERE / "convocation-native.pdf").write_bytes(native_pdf(NATIVE))
+
     word_letter().save(HERE / "bail.docx")
     (HERE / "convocation.eml").write_bytes(bytes(email_message()))
 

@@ -56,34 +56,61 @@ def test_markdown_marks_pages():
     assert markdown.startswith("<!-- page 1 · text -->\n\n")
 
 
+def fake_ocr(monkeypatch, *lines, gap=60, width=1200):
+    """RapidOCR reading ``(text, score)`` lines, one per row, ``gap`` pixels apart, the widest ``width`` wide."""
+    boxes = [[[100, 100 + gap * i], [100 + width, 100 + gap * i], [100 + width, 140 + gap * i], [100, 140 + gap * i]]
+             for i in range(len(lines))]
+    result = SimpleNamespace(txts=tuple(t for t, _ in lines) or None, scores=tuple(s for _, s in lines) or None,
+                             boxes=boxes or None)
+    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: result)
+
+
 def test_low_confidence_lines_are_flagged(monkeypatch):
-    fake = SimpleNamespace(txts=("net", "flou"), scores=(0.99, 0.41))
-    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: fake)
+    fake_ocr(monkeypatch, ("net", 0.99), ("flou", 0.41), gap=100)
     page = extract._ocr_page(1, Image.new("RGB", (10, 10)))
-    assert page.text == "net\n\nflou <!-- illisible ? confiance 0.41 -->"
-    assert page.min_confidence == 0.41
+    assert page.text == "net\n\n==flou==<!-- illisible ? confiance 0.41 · ligne 2/2 -->"
+    assert (page.min_confidence, page.lines) == (0.41, 2)
+    assert extract.to_markdown([page]).startswith("<!-- page 1 · ocr · 2 lignes · confiance min 0.41 -->")
+
+
+def test_ocr_lines_of_a_paragraph_are_joined_and_keep_their_flags(monkeypatch):
+    fake_ocr(monkeypatch, ("une phrase qui court sur", 0.97), ("trois lignes dont une", 0.62), ("douteuse.", 0.95))
+    page = extract._ocr_page(1, Image.new("RGB", (10, 10)))
+    assert page.text == ("une phrase qui court sur ==trois lignes dont une==<!-- illisible ? confiance 0.62"
+                         " · ligne 2/3 --> douteuse.")
 
 
 def test_lines_rapidocr_would_drop_are_kept_and_flagged(monkeypatch):
     assert extract._ocr_engine().text_score == 0  # RapidOCR's own filter is off
-    fake = SimpleNamespace(txts=("net", "  ", "très flou"), scores=(0.99, 0.10, 0.31))
-    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: fake)
+    fake_ocr(monkeypatch, ("net", 0.99), ("  ", 0.10), ("très flou", 0.31), gap=100)
     page = extract._ocr_page(1, a4_page(handwritten_lu))
-    assert page.text == "net\n\ntrès flou <!-- illisible ? confiance 0.31 -->"
+    assert page.text == "net\n\n==très flou==<!-- illisible ? confiance 0.31 · ligne 2/2 -->"
     assert (page.method, page.min_confidence) == ("ocr", 0.31)
 
 
 def test_specks_read_as_letters_do_not_hide_a_blank_page(monkeypatch):
-    fake = SimpleNamespace(txts=("i:",), scores=(0.22,))
-    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: fake)
+    fake_ocr(monkeypatch, ("i:", 0.22))
     assert extract._ocr_page(2, a4_page()).method == "blank"
-    assert extract._ocr_page(2, a4_page(signature)).text == "i: <!-- illisible ? confiance 0.22 -->"
+    assert extract._ocr_page(2, a4_page(signature)).text == "==i:==<!-- illisible ? confiance 0.22 · ligne 1/1 -->"
 
 
 def test_blank_page_is_reported_not_invented(monkeypatch):
-    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: SimpleNamespace(txts=None, scores=None))
+    fake_ocr(monkeypatch)
     page = extract._ocr_page(3, Image.new("RGB", (10, 10)))
     assert "page vide ou illisible" in extract.to_markdown([page])
+
+
+@pytest.mark.parametrize("name", ["paragraphes-natif.pdf", "paragraphes-scanne.pdf"])
+def test_paragraphs_are_rebuilt_and_blocks_kept_apart(name):
+    blocks = extract.extract_pages(FIXTURES / name)[0].text.split("\n\n")
+    squashed = [squash(block) for block in blocks]
+    assert squash("12, rue des Écoles") in squashed
+    assert squash("Objet : remboursement de vos frais de santé") in squashed
+    paragraph = next(block for block in blocks if block.startswith("Madame, nous avons"))
+    assert squash(paragraph).endswith(squash("sous huit jours."))  # three or four lines, one paragraph
+    assert "soixante-dix" in paragraph
+    assert len([block for block in blocks if block[:1] in "-–"]) == 2  # list items stay apart
+    assert squash(blocks[-1]).startswith(squash("Nous restons")) and squash(blocks[-1]).endswith("distinguées.")
 
 
 def a4_page(draw=lambda d: None, paper=250) -> Image.Image:

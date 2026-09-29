@@ -75,6 +75,7 @@ def document_text(markdown: str) -> str:
     """The document's text, without front matter and page markers."""
     text = re.sub(r"\A---\n.*?\n---\n", "", markdown, flags=re.DOTALL)
     text = re.sub(r"<!--.*?-->", "", text)
+    text = re.sub(r"==(.*?)==", r"\1", text)  # doubtful OCR, highlighted
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 

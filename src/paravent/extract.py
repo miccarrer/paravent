@@ -24,6 +24,8 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import Image, ImageStat
 
+from . import layout
+
 OCR_DPI = 200
 # A PDF page with less extractable text than this is treated as a scan.
 MIN_TEXT_CHARS = 25
@@ -58,6 +60,7 @@ class Page:
     text: str
     method: str  # "text", "ocr" or "blank" for PDF pages and images, "docx" or "eml" for unpaged sources
     min_confidence: float | None = None
+    lines: int | None = None  # pieces the OCR read, flags number them « ligne i/n »
 
 
 def convert(path: Path) -> str:
@@ -91,6 +94,8 @@ def to_markdown(pages: list[Page]) -> str:
             blocks += [f"<!-- {page.method} -->", page.text or "<!-- document vide -->"]
             continue
         header = f"<!-- page {page.number} · {page.method}"
+        if page.lines is not None:
+            header += f" · {page.lines} lignes"
         if page.min_confidence is not None:
             header += f" · confiance min {page.min_confidence:.2f}"
         blocks.append(header + " -->")
@@ -107,12 +112,13 @@ def _pdf_pages(path: Path, on_page: Callable[[int, int], None]) -> list[Page]:
         for number, page in enumerate(pdf, start=1):
             textpage = page.get_textpage()
             text = _normalize(textpage.get_text_bounded())
-            textpage.close()
             if len(text) >= MIN_TEXT_CHARS:
-                pages.append(Page(number, text, "text"))
+                pieces = _text_layer_pieces(textpage, page.get_height())
+                pages.append(Page(number, layout.paragraphs(pieces) or text, "text"))
             else:
                 image = page.render(scale=OCR_DPI / 72).to_pil()
                 pages.append(_ocr_page(number, image))
+            textpage.close()
             page.close()
             on_page(number, len(pdf))
     finally:
@@ -120,21 +126,37 @@ def _pdf_pages(path: Path, on_page: Callable[[int, int], None]) -> list[Page]:
     return pages
 
 
+def _text_layer_pieces(textpage, page_height: float) -> list[layout.Piece]:
+    pieces = []
+    for index in range(textpage.count_rects()):
+        left, bottom, right, top = textpage.get_rect(index)
+        text = " ".join(textpage.get_text_bounded(left, bottom, right, top).split())
+        if text:
+            pieces.append(layout.Piece(text, left, page_height - top, right, page_height - bottom))
+    return pieces
+
+
 def _ocr_page(number: int, image: Image.Image) -> Page:
     result = _ocr_engine()(image.convert("RGB"))
-    read = [(text.strip(), float(score)) for text, score in zip(result.txts or (), result.scores or ()) if text.strip()]
+    pieces = []
+    boxes = result.boxes if result.boxes is not None else ()  # a numpy array: no « or () »
+    for text, score, box in zip(result.txts or (), result.scores or (), boxes):
+        if text.strip():
+            xs, ys = [point[0] for point in box], [point[1] for point in box]
+            pieces.append(layout.Piece(" ".join(text.split()), min(xs), min(ys), max(xs), max(ys), float(score)))
     # Almost no ink and nothing RapidOCR would call text: specks read as letters.
-    if all(score < TEXT_SCORE for _, score in read) and is_blank(image):
+    if all(piece.score < TEXT_SCORE for piece in pieces) and is_blank(image):
         return Page(number, "", "blank")
-    if not read:
+    if not pieces:
         return Page(number, "", "ocr", 0.0)
-    lines = []
-    for text, score in read:
-        if score < LOW_CONFIDENCE:
-            text += f" <!-- illisible ? confiance {score:.2f} -->"
-        lines.append(text)
-    # One OCR line per paragraph: paragraph rebuilding comes later.
-    return Page(number, "\n\n".join(lines), "ocr", min(score for _, score in read))
+
+    def render(piece: layout.Piece, line: int) -> str:
+        if piece.score >= LOW_CONFIDENCE:
+            return piece.text
+        # Highlighted in Obsidian; the comment tells how sure, and where to look in the original.
+        return f"=={piece.text}==<!-- illisible ? confiance {piece.score:.2f} · ligne {line}/{len(pieces)} -->"
+
+    return Page(number, layout.paragraphs(pieces, render), "ocr", min(piece.score for piece in pieces), len(pieces))
 
 
 def is_blank(image: Image.Image) -> bool:
