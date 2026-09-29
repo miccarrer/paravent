@@ -21,13 +21,23 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageStat
 
 OCR_DPI = 200
 # A PDF page with less extractable text than this is treated as a scan.
 MIN_TEXT_CHARS = 25
 # OCR lines scored below this are flagged in the Markdown, never silently kept.
 LOW_CONFIDENCE = 0.80
+# A page where the OCR read nothing is blank (a verso) if, once shrunk to about
+# 50 dpi — isolated specks of the scan fade out — and without its margins,
+# almost none of it is ink, i.e. clearly darker than the paper. The recto
+# showing through stays lighter than that; a small signature or a word in
+# pencil leaves at least twice the allowed share (see tests/test_extract.py).
+BLANK_WIDTH = 400
+BLANK_MARGIN = 0.08  # scanner edges; punch holes reach 16 mm from the edge (ISO 838)
+BLANK_MAX_INK = 1e-4
+INK_CONTRAST = 40  # grey levels below the paper's median
+MIN_PAPER = 150  # a darker page (photo in dim light, coloured paper) is never called blank
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".eml"} | IMAGE_SUFFIXES
@@ -42,7 +52,7 @@ class UnsupportedFormat(ValueError):
 class Page:
     number: int
     text: str
-    method: str  # "text" or "ocr" for PDF pages and images, "docx" or "eml" for unpaged sources
+    method: str  # "text", "ocr" or "blank" for PDF pages and images, "docx" or "eml" for unpaged sources
     min_confidence: float | None = None
 
 
@@ -74,7 +84,8 @@ def to_markdown(pages: list[Page]) -> str:
         if page.min_confidence is not None:
             header += f" · confiance min {page.min_confidence:.2f}"
         blocks.append(header + " -->")
-        blocks.append(page.text if page.text else "<!-- page vide ou illisible -->")
+        empty = "<!-- page blanche -->" if page.method == "blank" else "<!-- page vide ou illisible -->"
+        blocks.append(page.text or empty)
     return "\n\n".join(blocks) + "\n"
 
 
@@ -100,7 +111,7 @@ def _pdf_pages(path: Path) -> list[Page]:
 def _ocr_page(number: int, image: Image.Image) -> Page:
     result = _ocr_engine()(image.convert("RGB"))
     if not result.txts:
-        return Page(number, "", "ocr", 0.0)
+        return Page(number, "", "blank") if is_blank(image) else Page(number, "", "ocr", 0.0)
     lines = []
     for text, score in zip(result.txts, result.scores):
         if score < LOW_CONFIDENCE:
@@ -108,6 +119,18 @@ def _ocr_page(number: int, image: Image.Image) -> Page:
         lines.append(text)
     # One OCR line per paragraph: paragraph rebuilding comes later.
     return Page(number, "\n\n".join(lines), "ocr", min(result.scores))
+
+
+def is_blank(image: Image.Image) -> bool:
+    gray = image.convert("L")
+    small = gray.reduce(max(1, gray.width // BLANK_WIDTH))
+    x, y = int(small.width * BLANK_MARGIN), int(small.height * BLANK_MARGIN)
+    small = small.crop((x, y, small.width - x, small.height - y))
+    paper = ImageStat.Stat(small).median[0]
+    if paper < MIN_PAPER:
+        return False
+    ink = sum(small.histogram()[:int(paper - INK_CONTRAST)])
+    return ink <= BLANK_MAX_INK * small.width * small.height
 
 
 def _docx_text(path: Path) -> str:

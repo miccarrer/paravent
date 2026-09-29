@@ -2,7 +2,8 @@
 
     uv run python tests/fixtures/make_fixtures.py [/path/to/LiberationSerif-Regular.ttf]
 
-Without the font, the scanned letter and the photo are left as they are.
+Without the font, the scanned letter and the photo are left as they are (the
+blank verso needs none).
 The outputs are committed, so the tests need neither this script nor the font.
 """
 
@@ -58,6 +59,27 @@ def scanned_letter(font_path: str) -> Image.Image:
     image = image.filter(ImageFilter.GaussianBlur(0.8))
     pixels = image.load()
     for _ in range(8000):
+        pixels[rng.randrange(width), rng.randrange(height)] = rng.choice((0, 90, 200))
+    return image
+
+
+def blank_verso() -> Image.Image:
+    """The back of a letter, scanned: nothing written, but everything a scanner adds."""
+    width, height = 1654, 2339  # A4 at 200 dpi
+    image = Image.new("L", (width, height), 250)
+    draw = ImageDraw.Draw(image)
+    # The recto's lines, showing through the paper, mirrored and very light.
+    rng = random.Random(2)
+    for index in range(10):
+        length = rng.randrange(700, 1300)
+        draw.rectangle((width - 140 - length, 190 + 70 * index, width - 140, 214 + 70 * index), fill=236)
+    image = image.filter(ImageFilter.GaussianBlur(4))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 14, height), fill=60)  # shadow along the scanner's edge
+    for y in (height // 3, 2 * height // 3):  # punch holes
+        draw.ellipse((70, y - 24, 118, y + 24), fill=30)
+    pixels = image.load()
+    for _ in range(9000):
         pixels[rng.randrange(width), rng.randrange(height)] = rng.choice((0, 90, 200))
     return image
 
@@ -131,6 +153,7 @@ def main() -> None:
         scan = scanned_letter(sys.argv[1])
         scan.convert("RGB").save(HERE / "courrier-scanne.pdf", resolution=200, quality=70)
         scan.crop((100, 80, 1300, 380)).save(HERE / "courrier-photo.png", optimize=True)
+    blank_verso().save(HERE / "verso-blanc.pdf", resolution=200, quality=50)
     (HERE / "convocation-native.pdf").write_bytes(native_pdf(NATIVE))
     word_letter().save(HERE / "bail.docx")
     (HERE / "convocation.eml").write_bytes(bytes(email_message()))

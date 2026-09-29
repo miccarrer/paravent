@@ -47,15 +47,16 @@ def test_measures_of_real_conversions(root):
         c.import_paths([FIXTURES])
         m = review.measure(c)
         assert {kind: sum(counts.values()) for kind, counts in m.formats.items()} == \
-            {"pdf": 3, "png": 1, "docx": 1, "eml": 1}  # the e-mail's attachment is a PDF
+            {"pdf": 4, "png": 1, "docx": 1, "eml": 1}  # the e-mail's attachment is a PDF
         assert m.attachments == 1 and m.missing_originals == 0
-        assert m.placement == {"à ranger": 6}
-        assert m.kinds == {"texte": 2, "OCR": 2, "docx": 1, "eml": 1}
-        assert m.pages["text"] == 2 and m.pages["ocr"] == 2
+        assert m.placement == {"à ranger": 7}
+        assert m.kinds == {"texte": 2, "OCR": 2, "blanc": 1, "docx": 1, "eml": 1}
+        assert m.pages == {"text": 2, "ocr": 2, "blanches": 1}
         lines = review.report(m)
-        assert lines[0] == "Documents : 6 (dont 1 pièce(s) jointe(s) de mails)"
+        assert lines[0] == "Documents : 7 (dont 1 pièce(s) jointe(s) de mails)"
         # Figures only: no name from the corpus shows up.
-        assert not any(name in "\n".join(lines) for name in ("convocation", "courrier", "bail", ".pdf", "_a-ranger"))
+        names = ("convocation", "courrier", "bail", "verso", ".pdf", "_a-ranger")
+        assert not any(name in "\n".join(lines) for name in names)
 
 
 def test_measures_flag_short_text_layers_and_illegible_lines(root, tmp_path, monkeypatch):
@@ -68,19 +69,22 @@ def test_measures_flag_short_text_layers_and_illegible_lines(root, tmp_path, mon
                       extract.Page(3, "net", "ocr", 0.97),
                       extract.Page(4, "", "ocr", 0.0)],
         "casse.pdf": ValueError("PDF illisible"),
+        "verso.pdf": [extract.Page(1, "x" * 1200, "text"), extract.Page(2, "", "blank")],
+        "blanc.png": [extract.Page(1, "", "blank")],
     })
     with corpus.Corpus(root) as c:
         c.import_paths(sources)
         (root / "corpus" / "_a-ranger" / "tampon.md").rename(root / "corpus" / "tampon.md")
         m = review.measure(c)
-    assert m.formats["pdf"] == {"fait": 1, "a_verifier": 1, "echec": 1}
-    assert m.placement == {"à ranger": 1, "rangés": 1}
-    assert m.kinds == {"texte": 1, "mixte": 1}
-    assert m.pages == {"text": 3, "ocr": 2, "vides": 1}
-    assert m.text_ranges == {"< 200": 1, "200–999": 1, "≥ 1000": 1}
+    assert m.formats["pdf"] == {"fait": 2, "a_verifier": 1, "echec": 1}
+    assert m.formats["png"] == {"a_verifier": 1}  # entirely blank
+    assert m.placement == {"à ranger": 3, "rangés": 1}
+    assert m.kinds == {"texte": 2, "mixte": 1, "blanc": 1}
+    assert m.pages == {"text": 4, "ocr": 2, "vides": 1, "blanches": 2}
+    assert m.text_ranges == {"< 200": 1, "200–999": 1, "≥ 1000": 2}
     assert m.confidence_ranges == {"< 0,80": 1, "≥ 0,95": 1}
     assert (m.short_text_documents, m.illegible_lines, m.illegible_documents) == (1, 2, 1)
-    assert sorted(m.pages_per_document) == [2, 4]
+    assert sorted(m.pages_per_document) == [1, 2, 2, 4]
     text = "\n".join(review.report(m))
     assert "pages texte de moins de 200 caractères : 1, dans 1 document(s)" in text
     assert "OCR, confiance minimale par page : ≥ 0,95 1 · 0,90–0,95 0 · 0,80–0,90 0 · < 0,80 1" in text

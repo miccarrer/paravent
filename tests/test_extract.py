@@ -1,7 +1,9 @@
 import difflib
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
+import pypdfium2 as pdfium
 import pytest
 from PIL import Image
 
@@ -66,6 +68,54 @@ def test_blank_page_is_reported_not_invented(monkeypatch):
     monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: SimpleNamespace(txts=None, scores=None))
     page = extract._ocr_page(3, Image.new("RGB", (10, 10)))
     assert "page vide ou illisible" in extract.to_markdown([page])
+
+
+def a4_page(draw=lambda d: None, paper=250) -> Image.Image:
+    """An A4 page at 200 dpi, softened like a scan."""
+    from PIL import ImageDraw, ImageFilter
+
+    image = Image.new("L", (1654, 2339), paper)
+    draw(ImageDraw.Draw(image))
+    return image.filter(ImageFilter.GaussianBlur(0.8))
+
+
+def signature(draw, grey=30):
+    # 15 mm wide, 2 px pen: a small signature.
+    draw.line([(900 + t * 1.1, 1900 + 20 * math.sin(t / 9) + 12 * math.sin(t / 3.1)) for t in range(140)],
+              fill=grey, width=2)
+
+
+def handwritten_lu(draw, grey=40):
+    draw.line([(300, 1500), (300, 1560), (335, 1560)], fill=grey, width=2)
+    draw.line([(350, 1530), (352, 1558), (375, 1556), (378, 1530), (380, 1560)], fill=grey, width=2)
+
+
+def scanned_verso() -> Image.Image:
+    pdf = pdfium.PdfDocument(FIXTURES / "verso-blanc.pdf")
+    return pdf[0].render(scale=extract.OCR_DPI / 72).to_pil()
+
+
+@pytest.mark.parametrize(("name", "page", "blank"), [
+    ("page blanche", lambda: a4_page(), True),
+    ("verso scanné : poussières, recto en transparence, bord, perforations", scanned_verso, True),
+    ("petite signature", lambda: a4_page(signature), False),
+    ("signature à l'encre claire", lambda: a4_page(lambda d: signature(d, grey=140)), False),
+    ("« Lu » manuscrit", lambda: a4_page(handwritten_lu), False),
+    ("« Lu » au crayon", lambda: a4_page(lambda d: handwritten_lu(d, grey=150)), False),
+    ("photo sombre", lambda: a4_page(paper=120), False),
+])
+def test_is_blank(name, page, blank):
+    assert extract.is_blank(page()) is blank
+
+
+def test_blank_verso_is_not_a_doubtful_page(tmp_path):
+    recto_verso = pdfium.PdfDocument.new()
+    for source in ("courrier-scanne.pdf", "verso-blanc.pdf"):
+        recto_verso.import_pages(pdfium.PdfDocument(FIXTURES / source))
+    recto_verso.save(tmp_path / "recto-verso.pdf")
+    pages = extract.extract_pages(tmp_path / "recto-verso.pdf")
+    assert [page.method for page in pages] == ["ocr", "blank"]
+    assert extract.to_markdown(pages).endswith("<!-- page 2 · blank -->\n\n<!-- page blanche -->\n")
 
 
 def test_unsupported_format(tmp_path):

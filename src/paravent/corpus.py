@@ -367,8 +367,12 @@ def _walk(paths: Iterable[Path]) -> Iterator[Path]:
 
 
 def _review_status(pages: list[extract.Page]) -> tuple[str, str | None]:
+    if pages and all(page.method == "blank" for page in pages):
+        return REVIEW, "document entièrement blanc"
     reasons = []
     for page in pages:
+        if page.method == "blank":
+            continue
         if not page.text:
             reasons.append(f"page {page.number} vide ou illisible")
         elif page.min_confidence is not None and page.min_confidence < extract.LOW_CONFIDENCE:

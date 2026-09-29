@@ -43,7 +43,7 @@ _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 @dataclass
 class Page:
-    method: str  # "text" or "ocr"
+    method: str  # "text", "ocr" or "blank"
     chars: int  # without the comments Paravent adds
     confidence: float | None
     illegible: int  # OCR lines flagged « illisible ? »
@@ -68,8 +68,8 @@ class Measures:
     missing_originals: int = 0
     attachments: int = 0
     placement: Counter = field(default_factory=Counter)  # à ranger / rangés / introuvable
-    kinds: Counter = field(default_factory=Counter)  # texte / OCR / mixte / docx / eml / sans repère
-    pages: Counter = field(default_factory=Counter)  # text / ocr / vides
+    kinds: Counter = field(default_factory=Counter)  # texte / OCR / mixte / blanc / docx / eml / sans repère
+    pages: Counter = field(default_factory=Counter)  # text / ocr / vides / blanches
     text_ranges: Counter = field(default_factory=Counter)
     confidence_ranges: Counter = field(default_factory=Counter)
     short_text_documents: int = 0
@@ -109,13 +109,13 @@ def _measure_document(m: Measures, text: str) -> None:
         unpaged = _UNPAGED.search(text)
         m.kinds[unpaged.group(1) if unpaged else "sans repère"] += 1
         return
-    methods = {page.method for page in pages}
-    m.kinds["mixte" if len(methods) > 1 else "texte" if methods == {"text"} else "OCR"] += 1
+    methods = {page.method for page in pages} - {"blank"}
+    m.kinds["blanc" if not methods else "mixte" if len(methods) > 1 else "texte" if methods == {"text"} else "OCR"] += 1
     m.pages_per_document.append(len(pages))
     short = illegible = 0
     for page in pages:
-        if not page.chars:
-            m.pages["vides"] += 1
+        if page.method == "blank" or not page.chars:
+            m.pages["blanches" if page.method == "blank" else "vides"] += 1
             continue
         m.pages[page.method] += 1
         if page.method == "text":
@@ -149,12 +149,12 @@ def report(m: Measures) -> list[str]:
     lines.append("  originaux : " + _megabytes(sum(m.weights.values()))
                  + (f" · manquants : {m.missing_originals}" if m.missing_originals else ""))
     places = ["à ranger", "rangés", "introuvable", "illisible"]
-    kinds = ["texte", "OCR", "mixte", *sorted(extract.UNPAGED), "sans repère"]
+    kinds = ["texte", "OCR", "mixte", "blanc", *sorted(extract.UNPAGED), "sans repère"]
     lines.append("Convertis : " + _join(m.placement, places, hide_zero=True))
     lines.append("  nature : " + _join(m.kinds, kinds, hide_zero=True))
     if m.pages_per_document:
         lines.append(f"Pages : {sum(m.pages.values())} · couche texte {m.pages['text']} · OCR {m.pages['ocr']}"
-                     f" · vides {m.pages['vides']}")
+                     f" · vides {m.pages['vides']} · blanches {m.pages['blanches']}")
         lines.append(f"  par document : médiane {statistics.median(m.pages_per_document):g}"
                      f" · max {max(m.pages_per_document)}")
         lines.append("  couche texte, caractères par page : " + _join(m.text_ranges, [l for _, l in TEXT_RANGES]))

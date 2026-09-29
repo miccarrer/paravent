@@ -41,7 +41,9 @@ MonCorpus/
   avec un lien vers le mail d'origine (`piece_jointe_de`).
 - Chaque page est précédée d'un repère `<!-- page N · ocr · confiance min 0.94 -->`. Une ligne
   que l'OCR lit mal est signalée comme telle ; elle n'est jamais gardée sans avertissement. Un
-  document qui a une page vide ou peu sûre passe « à vérifier ».
+  document qui a une page vide ou peu sûre passe « à vérifier ». Une page blanche (un verso) est
+  reconnue comme telle et ne compte pas : il faut que l'OCR n'y lise rien et qu'elle n'ait
+  presque pas d'encre, si bien qu'une signature ou un mot au crayon la laissent « à vérifier ».
 - Les documents à vérifier sont listés dans `À vérifier.md`, à la racine du corpus (hors de
   `corpus/`, donc jamais dans le miroir), avec un lien vers le Markdown et un vers l'original.
   Cochez la case d'un document une fois relu (dans Obsidian, par exemple) : le prochain

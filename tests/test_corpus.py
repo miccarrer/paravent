@@ -163,6 +163,21 @@ def test_failures_and_doubtful_pages_are_recorded(root, tmp_path, monkeypatch):
         assert c.documents(corpus.FAILED) == []
 
 
+def test_blank_pages_are_not_doubtful_unless_the_whole_document_is(root, tmp_path, monkeypatch):
+    (tmp_path / "verso.pdf").write_bytes(b"recto-verso")
+    (tmp_path / "blanc.pdf").write_bytes(b"blanc")
+
+    def fake(path):
+        blank = extract.Page(2, "", "blank")
+        return [extract.Page(1, "recto", "ocr", 0.97), blank] if path.stat().st_size == 11 else [blank]
+
+    monkeypatch.setattr(extract, "extract_pages", fake)
+    with corpus.Corpus(root) as c:
+        c.import_paths([tmp_path / "verso.pdf", tmp_path / "blanc.pdf"])
+        assert [(d.source_name, d.status, d.detail) for d in c.documents()] == [
+            ("blanc.pdf", "a_verifier", "document entièrement blanc"), ("verso.pdf", "fait", None)]
+
+
 def test_move_files_a_document_safely(root, sources):
     with corpus.Corpus(root) as c:
         c.import_paths([sources / "convocation-native.pdf"])
