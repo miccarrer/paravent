@@ -1,13 +1,19 @@
 """Regenerate the test documents. Every name, number and address is invented.
 
-    uv run python tests/fixtures/make_fixtures.py /path/to/LiberationSerif-Regular.ttf
+    uv run python tests/fixtures/make_fixtures.py [/path/to/LiberationSerif-Regular.ttf]
 
+Without the font, the scanned letter and the photo are left as they are.
 The outputs are committed, so the tests need neither this script nor the font.
 """
 
 import random
 import sys
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import format_datetime
 from pathlib import Path
+
+import docx
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -30,6 +36,12 @@ NATIVE = [
     "Pôle Exemple - Agence de Exempleville",
     "Convocation à un entretien le 12 février à 9 h 30.",
     "Merci de vous présenter muni de votre pièce d'identité.",
+]
+
+ATTACHMENT = [
+    "Pôle Exemple - Agence de Exempleville",
+    "Convocation : atelier collectif le 12 février à 14 h.",
+    "Cet atelier est obligatoire.",
 ]
 
 
@@ -81,11 +93,47 @@ def native_pdf(lines: list[str]) -> bytes:
     return bytes(out)
 
 
+def word_letter() -> docx.Document:
+    document = docx.Document()
+    document.core_properties.created = document.core_properties.modified = datetime(2026, 1, 1)
+    document.core_properties.author = "Exemple"
+    document.add_heading("Bail d'habitation", level=1)
+    document.add_paragraph("Entre les soussignés :")
+    document.add_paragraph("Monsieur Gérard Exemplaire, bailleur", style="List Bullet")
+    document.add_paragraph("Madame Élodie Lefèvre-Garçon, locataire", style="List Bullet")
+    document.add_heading("Loyer", level=2)
+    paragraph = document.add_paragraph("Le loyer mensuel est fixé à ")
+    paragraph.add_run("540,00 €").bold = True
+    paragraph.add_run(", charges comprises.")
+    table = document.add_table(rows=3, cols=2)
+    for row, (label, value) in zip(table.rows, [("Poste", "Montant"), ("Loyer", "480,00 €"), ("Charges", "60,00 €")]):
+        row.cells[0].text, row.cells[1].text = label, value
+    document.sections[0].header.paragraphs[0].text = "Agence Exemple Immobilier — 99000 Exempleville"
+    return document
+
+
+def email_message() -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = "Conseillère Pôle Exemple <conseil@pole-exemple.fr>"
+    message["To"] = "Élodie Lefèvre-Garçon <elodie.lefevre@exemple.fr>"
+    message["Subject"] = "Votre convocation du 12 février"
+    message["Date"] = format_datetime(datetime(2026, 2, 2, 10, 15, tzinfo=timezone.utc))
+    message.set_content("Bonjour Madame,\n\nVous trouverez ci-joint votre convocation.\n\nCordialement,\nVotre conseillère")
+    message.add_alternative("<p>Bonjour Madame,</p><p>Vous trouverez <b>ci-joint</b> votre convocation.</p>"
+                            "<p>Cordialement,<br>Votre conseillère</p>", subtype="html")
+    message.add_attachment(native_pdf(ATTACHMENT), maintype="application",
+                           subtype="pdf", filename="convocation.pdf")
+    return message
+
+
 def main() -> None:
-    scan = scanned_letter(sys.argv[1])
-    scan.convert("RGB").save(HERE / "courrier-scanne.pdf", resolution=200, quality=70)
-    scan.crop((100, 80, 1300, 380)).save(HERE / "courrier-photo.png", optimize=True)
+    if len(sys.argv) > 1:
+        scan = scanned_letter(sys.argv[1])
+        scan.convert("RGB").save(HERE / "courrier-scanne.pdf", resolution=200, quality=70)
+        scan.crop((100, 80, 1300, 380)).save(HERE / "courrier-photo.png", optimize=True)
     (HERE / "convocation-native.pdf").write_bytes(native_pdf(NATIVE))
+    word_letter().save(HERE / "bail.docx")
+    (HERE / "convocation.eml").write_bytes(bytes(email_message()))
 
 
 if __name__ == "__main__":

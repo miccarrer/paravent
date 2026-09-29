@@ -42,7 +42,8 @@ INBOX = "_a-ranger"
 
 TODO, DONE, FAILED, REVIEW = "a_faire", "fait", "echec", "a_verifier"
 STATUS_LABELS = {TODO: "à faire", DONE: "fait", FAILED: "échec", REVIEW: "à vérifier"}
-SUPPORTED_SUFFIXES = {".pdf"} | extract.IMAGE_SUFFIXES
+SUPPORTED_SUFFIXES = extract.SUPPORTED_SUFFIXES
+ATTACHMENT_SEPARATOR = " › "
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -51,6 +52,7 @@ CREATE TABLE documents (
     source_name TEXT NOT NULL,
     source_path TEXT NOT NULL,
     original    TEXT NOT NULL,
+    parent      TEXT REFERENCES documents (sha256),
     markdown    TEXT,
     status      TEXT NOT NULL CHECK (status IN ('a_faire', 'fait', 'echec', 'a_verifier')),
     detail      TEXT,
@@ -116,10 +118,11 @@ class Corpus:
         for source in _walk(paths):
             if source.suffix.lower() not in SUPPORTED_SUFFIXES:
                 report.unsupported.append(source)
-            elif self._register(source):
-                report.added.append(source)
             else:
-                report.duplicates.append(source)
+                (report.added if self._register(source) else report.duplicates).append(source)
+                if source.suffix.lower() == ".eml":
+                    # Also for a known e-mail: an interrupted import may have missed its attachments.
+                    self._register_attachments(source, report)
         if retry_failed:
             with self.db:
                 self.db.execute("UPDATE documents SET status = ?, detail = NULL WHERE status = ?", (TODO, FAILED))
@@ -132,21 +135,39 @@ class Corpus:
 
     def _register(self, source: Path) -> bool:
         """Copy a source file into originaux/ and record it; False if already known."""
-        digest = _sha256(source)
+        return self._record(_sha256(source), source.name, str(source.resolve()),
+                            lambda partial: shutil.copyfile(source, partial))
+
+    def _register_attachments(self, mail: Path, report: ImportReport) -> None:
+        """Each attachment of an e-mail becomes a document of its own."""
+        parent = _sha256(mail)
+        for name, data in extract.mail_attachments(mail):
+            name = safe_filename(Path(name).stem) + Path(name).suffix.lower()
+            shown = Path(f"{mail}{ATTACHMENT_SEPARATOR}{name}")
+            if Path(name).suffix not in SUPPORTED_SUFFIXES:
+                report.unsupported.append(shown)
+            elif self._record(hashlib.sha256(data).hexdigest(), name, str(shown.absolute()),
+                              lambda partial: partial.write_bytes(data), parent=parent):
+                report.added.append(shown)
+            else:
+                report.duplicates.append(shown)
+
+    def _record(self, digest: str, name: str, source_path: str, write: Callable[[Path], object],
+                parent: str | None = None) -> bool:
         if self.db.execute("SELECT 1 FROM documents WHERE sha256 = ?", (digest,)).fetchone():
             return False
-        original = Path(ORIGINALS) / f"{digest[:16]}{source.suffix.lower()}"
+        original = Path(ORIGINALS) / f"{digest[:16]}{Path(name).suffix.lower()}"
         target = self.root / original
         if not target.exists():
             partial = target.with_name(target.name + ".partiel")
-            shutil.copyfile(source, partial)
+            write(partial)
             os.replace(partial, target)
             target.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
         with self.db:
             self.db.execute(
-                "INSERT INTO documents (sha256, source_name, source_path, original, status, imported_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (digest, source.name, str(source.resolve()), original.as_posix(), TODO, _now()))
+                "INSERT INTO documents (sha256, source_name, source_path, original, parent, status, imported_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (digest, name, source_path, original.as_posix(), parent, TODO, _now()))
         return True
 
     def _convert(self, row: sqlite3.Row) -> str:
@@ -163,9 +184,11 @@ class Corpus:
         else:
             status, detail = _review_status(pages)
             link = f"[[{row['original']}]]"  # clickable in Obsidian's Properties
-            front = (f"---\noriginal: {_yaml_str(link)}\n"
-                     f"nom_origine: {_yaml_str(row['source_name'])}\n"
-                     f"importe_le: {row['imported_at'][:10]}\n---\n\n")
+            front = f"---\noriginal: {_yaml_str(link)}\nnom_origine: {_yaml_str(row['source_name'])}\n"
+            if row["parent"]:
+                mail, = self.db.execute("SELECT original FROM documents WHERE sha256 = ?", (row["parent"],)).fetchone()
+                front += f"piece_jointe_de: {_yaml_str(f'[[{mail}]]')}\n"
+            front += f"importe_le: {row['imported_at'][:10]}\n---\n\n"
             _write_atomic(self.root / markdown, front + body)
         with self.db:
             self.db.execute("UPDATE documents SET status = ?, detail = ?, converted_at = ? WHERE sha256 = ?",

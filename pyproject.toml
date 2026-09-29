@@ -10,6 +10,7 @@ dependencies = [
     "rapidocr>=3.9",
     "onnxruntime>=1.30",
     "pillow>=12.3",
+    "python-docx>=1.2",
 ]
 
 [project.scripts]

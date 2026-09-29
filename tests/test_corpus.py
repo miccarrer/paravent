@@ -98,6 +98,20 @@ def test_import_copies_deduplicates_and_converts(root, sources):
         assert again.added == [] and len(again.duplicates) == 3
 
 
+def test_email_attachments_become_documents(root):
+    with corpus.Corpus(root) as c:
+        report = c.import_paths([FIXTURES / "convocation.eml"])
+        assert [p.name for p in report.added] == ["convocation.eml", "convocation.eml › convocation.pdf"]
+        mail, attachment = c.documents()
+        assert attachment.source_name == "convocation.pdf"
+        text = (root / attachment.markdown).read_text(encoding="utf-8")
+        assert f'piece_jointe_de: "[[{mail.original}]]"' in text
+        assert "atelier collectif" in text
+
+        again = c.import_paths([FIXTURES / "convocation.eml"])
+        assert again.added == [] and len(again.duplicates) == 2
+
+
 def test_interrupted_import_resumes_without_twins(root, sources, monkeypatch):
     calls = []
 

@@ -16,7 +16,7 @@ faire des propositions si elle est configurée ; rien n'en dépend.
 ```sh
 paravent init ~/MonCorpus                  # crée un corpus dans un dossier vide
 cd ~/MonCorpus
-paravent import ~/Téléchargements/scans    # fichiers ou dossiers (PDF, images)
+paravent import ~/Téléchargements/scans    # fichiers ou dossiers (PDF, images, Word, e-mails)
 paravent etat                              # à faire · fait · échec · à vérifier
 paravent ranger                            # range les documents arrivés dans corpus/_a-ranger
 paravent convert courrier.pdf -o courrier.md   # un document seul, hors corpus
@@ -35,6 +35,9 @@ MonCorpus/
 - Les pages PDF qui ont une couche texte sont lues directement. Les autres (scans, photos)
   passent par l'OCR ([RapidOCR](https://github.com/RapidAI/RapidOCR)). Ses modèles sont fournis
   avec l'installation : rien n'est téléchargé à l'usage.
+- Un document Word (`.docx`) garde ses titres, listes et tableaux. Un e-mail (`.eml`) donne
+  ses en-têtes (de, à, date, objet) et son texte ; chaque pièce jointe devient un document à part,
+  avec un lien vers le mail d'origine (`piece_jointe_de`).
 - Chaque page est précédée d'un repère `<!-- page N · ocr · confiance min 0.94 -->`. Une ligne
   que l'OCR lit mal est signalée comme telle ; elle n'est jamais gardée sans avertissement. Un
   document qui a une page vide ou peu sûre passe « à vérifier ».

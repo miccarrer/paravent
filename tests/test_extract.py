@@ -73,3 +73,42 @@ def test_unsupported_format(tmp_path):
     source.write_bytes(b"")
     with pytest.raises(extract.UnsupportedFormat):
         extract.extract_pages(source)
+
+
+def test_word_document_keeps_structure():
+    markdown = extract.convert(FIXTURES / "bail.docx")
+    assert markdown.startswith("<!-- docx -->\n\n<!-- en-tête -->\nAgence Exemple Immobilier")
+    assert "# Bail d'habitation" in markdown and "## Loyer" in markdown
+    assert "- Monsieur Gérard Exemplaire, bailleur\n- Madame Élodie Lefèvre-Garçon, locataire" in markdown
+    assert "Le loyer mensuel est fixé à 540,00 €, charges comprises." in markdown
+    assert "| Poste | Montant |\n| --- | --- |\n| Loyer | 480,00 € |" in markdown
+
+
+def test_email_headers_body_and_attachment_names():
+    markdown = extract.convert(FIXTURES / "convocation.eml")
+    assert "**De :** Conseillère Pôle Exemple <conseil@pole-exemple.fr>" in markdown
+    assert "**Date :** 2026-02-02 10:15" in markdown
+    assert "**Objet :** Votre convocation du 12 février" in markdown
+    assert "Vous trouverez ci-joint votre convocation." in markdown
+    assert "<p>" not in markdown  # the plain-text alternative wins
+    assert markdown.rstrip().endswith("**Pièces jointes :** convocation.pdf")
+
+
+def test_email_attachments():
+    (name, data), = extract.mail_attachments(FIXTURES / "convocation.eml")
+    assert name == "convocation.pdf" and data.startswith(b"%PDF")
+
+
+def test_html_only_email(tmp_path):
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["Subject"] = "Relevé"
+    message.set_content("<html><head><style>p{}</style></head><body><p>Solde&nbsp;: 12,00&nbsp;€</p>"
+                        "<ul><li>un</li><li>deux</li></ul><script>x()</script></body></html>", subtype="html")
+    source = tmp_path / "releve.eml"
+    source.write_bytes(bytes(message))
+    markdown = extract.convert(source)
+    assert "Solde : 12,00 €" in markdown
+    assert "- un\n- deux" in markdown
+    assert "x()" not in markdown and "p{}" not in markdown
