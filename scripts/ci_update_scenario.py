@@ -84,6 +84,18 @@ def main() -> int:
     assert result.returncode == 0, "paravent update failed"
     log_match = re.search(r"journal : (.+)\)", result.stdout)
 
+    if log_match:  # Windows: the install runs in the background
+        # Started meanwhile, Paravent must step aside rather than lock the files being replaced.
+        during = run([exe, "--version"], env, capture_output=True, timeout=60)
+        print("launched during the update:", during.returncode, during.stdout.strip(), during.stderr.strip())
+        assert during.returncode == 75 or during.stdout.strip() == NEW, "Paravent ran during its own update"
+        # Wait for the script to finish before launching Paravent again.
+        log = Path(log_match.group(1))
+        while time.monotonic() - start < UPDATE_TIMEOUT:
+            if log.exists() and "paravent-update-exit=" in log.read_text(encoding="utf-8-sig", errors="replace"):
+                break
+            time.sleep(2)
+
     version = None
     while time.monotonic() - start < UPDATE_TIMEOUT:
         try:

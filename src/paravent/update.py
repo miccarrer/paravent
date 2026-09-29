@@ -7,7 +7,10 @@ tool from it.
 
 On Windows the running ``paravent.exe`` is locked and cannot be replaced
 while it runs, so the reinstall is handed to a detached PowerShell process
-that waits for this one to exit first.
+that waits for this one to exit first. A Paravent started meanwhile would
+lock the files again and leave the tool half removed: it finds a marker file
+and stops at once, and the script retries while any process still runs from
+the tool's folder.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,10 @@ from urllib.parse import urljoin, urlparse
 
 DEFAULT_MANIFEST_URL = "https://github.com/miccarrer/paravent/releases/latest/download/latest.json"
 TIMEOUT = 30
+INSTALL_ATTEMPTS = 5
+MARKER = "mise-a-jour-en-cours"
+# A marker older than this was left by a script that died: ignore it.
+MARKER_MAX_AGE = 15 * 60
 
 
 class UpdateError(RuntimeError):
@@ -99,6 +107,15 @@ def cache_dir() -> Path:
     return base / "paravent" / "updates"
 
 
+def in_progress() -> bool:
+    """True while a deferred Windows update is being installed."""
+    try:
+        age = time.time() - (cache_dir() / MARKER).stat().st_mtime
+    except OSError:
+        return False
+    return age < MARKER_MAX_AGE
+
+
 def find_uv() -> str:
     uv = os.environ.get("PARAVENT_UV") or shutil.which("uv")
     if not uv:
@@ -142,10 +159,13 @@ def _install_deferred_windows(command: list[str], work_dir: Path) -> Path:
     # Wait for this interpreter and for the uv launcher (paravent.exe) that
     # started it: both hold files the reinstall must replace.
     pids = sorted({os.getpid(), os.getppid()})
+    marker = cache_dir() / MARKER
     # Windows PowerShell 5.1 reads a BOM-less script as ANSI, which would
     # mangle a non-ASCII profile path (C:\Users\Hélène\...): write a BOM.
-    script.write_text(windows_update_script(command, log, pids), encoding="utf-8-sig")
+    script.write_text(windows_update_script(command, log, pids, Path(sys.prefix), marker), encoding="utf-8-sig")
     log.unlink(missing_ok=True)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(os.getpid()))
     # No DETACHED_PROCESS: PowerShell without any console may die on start.
     # A hidden console of its own (CREATE_NO_WINDOW) in a separate process
     # group keeps it alive once Paravent exits.
@@ -160,20 +180,34 @@ def _install_deferred_windows(command: list[str], work_dir: Path) -> Path:
     return log
 
 
-def windows_update_script(command: list[str], log: Path, pids: list[int]) -> str:
+def windows_update_script(command: list[str], log: Path, pids: list[int], tool_dir: Path, marker: Path) -> str:
     def quote(value: object) -> str:
         return "'" + str(value).replace("'", "''") + "'"
 
+    tool_prefix = str(tool_dir).rstrip("\\") + "\\"  # so that C:\...\paravent does not match paravent-old
     return (
         f"function Log($line) {{ Add-Content -Path {quote(log)} -Value $line -Encoding UTF8 }}\n"
+        f"$toolDir = {quote(tool_prefix)}\n"
         'Log "started $(Get-Date -Format o)"\n'
         f"Wait-Process -Id {','.join(map(str, pids))} -Timeout 120 -ErrorAction SilentlyContinue\n"
-        'Log "installing $(Get-Date -Format o)"\n'
+        f"for ($attempt = 1; $attempt -le {INSTALL_ATTEMPTS}; $attempt++) {{\n"
+        # Anything still running from the tool's folder holds its files.
+        "  $busy = Get-Process -ErrorAction SilentlyContinue | Where-Object {\n"
+        "    $_.Path -and $_.Path.StartsWith($toolDir, [StringComparison]::OrdinalIgnoreCase) }\n"
+        "  if ($busy) {\n"
+        '    Log "waiting for $(@($busy).Count) process(es) from the tool folder"\n'
+        "    $busy | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue\n"
+        "  }\n"
+        '  Log "installing, attempt $attempt, $(Get-Date -Format o)"\n'
         # PowerShell 5.1 wraps each stderr line of a native command in an
         # ErrorRecord; turn them back into plain text for the log.
-        f"$output = & {' '.join(map(quote, command))} 2>&1 | ForEach-Object {{ \"$_\" }} | Out-String\n"
-        "$code = $LASTEXITCODE\n"
-        "Log $output\n"
+        f"  $output = & {' '.join(map(quote, command))} 2>&1 | ForEach-Object {{ \"$_\" }} | Out-String\n"
+        "  $code = $LASTEXITCODE\n"
+        "  Log $output\n"
+        "  if ($code -eq 0) { break }\n"
+        "  Start-Sleep -Seconds 5\n"
+        "}\n"
+        f"Remove-Item -Path {quote(marker)} -Force -ErrorAction SilentlyContinue\n"
         'Log "paravent-update-exit=$code"\n'
     )
 

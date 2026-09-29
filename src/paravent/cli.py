@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     upd.add_argument("--yes", action="store_true", help="installer sans demander de confirmation")
 
     args = parser.parse_args(argv)
+    if update.in_progress():
+        print("Paravent est en train de se mettre à jour. Réessayez dans une minute.", file=sys.stderr)
+        return 75
     if (sys.stdout.encoding or "").lower() != "utf-8":
         sys.stdout.reconfigure(encoding="utf-8")
     try:

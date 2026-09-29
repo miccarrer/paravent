@@ -1,7 +1,7 @@
 import hashlib
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -70,9 +70,28 @@ def test_install_command_keeps_current_python(tmp_path):
 
 
 def test_windows_script_quotes_paths_with_accents_and_apostrophes():
-    log = Path(r"C:\Users\Hélène d'Arc\AppData\Local\paravent\updates\update.log")
-    script = update.windows_update_script(["uv", "tool", "install", r"C:\Users\Hélène d'Arc\p.whl"], log, [12, 34])
+    log = PureWindowsPath(r"C:\Users\Hélène d'Arc\AppData\Local\paravent\updates\update.log")
+    tool_dir = PureWindowsPath(r"C:\Users\Hélène d'Arc\AppData\Roaming\uv\tools\paravent")
+    script = update.windows_update_script(["uv", "tool", "install", r"C:\Users\Hélène d'Arc\p.whl"], log, [12, 34],
+                                          tool_dir, log.with_name("mise-a-jour-en-cours"))
     assert "Wait-Process -Id 12,34 -Timeout 120" in script
     assert r"'C:\Users\Hélène d''Arc\p.whl'" in script
     assert r"Add-Content -Path 'C:\Users\Hélène d''Arc\AppData" in script
+    assert r"$toolDir = 'C:\Users\Hélène d''Arc\AppData\Roaming\uv\tools\paravent\'" in script
+    assert f"$attempt -le {update.INSTALL_ATTEMPTS}" in script
+    assert r"Remove-Item -Path 'C:\Users\Hélène d''Arc\AppData\Local\paravent\updates\mise-a-jour-en-cours'" in script
     assert script.rstrip().endswith('Log "paravent-update-exit=$code"')
+
+
+def test_update_in_progress_marker(tmp_path, monkeypatch):
+    import os
+    import time
+
+    monkeypatch.setenv("PARAVENT_CACHE_DIR", str(tmp_path))
+    assert not update.in_progress()
+    marker = tmp_path / update.MARKER
+    marker.write_text("1")
+    assert update.in_progress()
+    old = time.time() - update.MARKER_MAX_AGE - 1
+    os.utime(marker, (old, old))
+    assert not update.in_progress()  # left behind by a script that died
