@@ -28,17 +28,26 @@ PRESET = {
 }
 
 
+# Sync and Publish are core plugins Obsidian turns on by default: harmless without
+# an account, but one sign-in away from sending the documents. Off in a new corpus.
+CORE_PRESET = dict.fromkeys(LEAKY_CORE_PLUGINS, False)
+
+
 def preset(root: Path) -> None:
     """Add the settings Paravent needs, keeping any the user has already chosen."""
     config = root / CONFIG_DIR
     config.mkdir(exist_ok=True)
-    app = config / "app.json"
-    current = _read_json(app, {})
-    if not isinstance(current, dict):
+    _merge(config / "app.json", PRESET)
+    _merge(config / "core-plugins.json", CORE_PRESET)
+
+
+def _merge(path: Path, defaults: dict) -> None:
+    current = _read_json(path, {})
+    if not isinstance(current, dict):  # an older format, or the user's own: left alone
         return
-    merged = PRESET | current
+    merged = defaults | current
     if merged != current:
-        app.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def enclosing_vault(path: Path) -> Path | None:
@@ -63,7 +72,9 @@ def warnings(root: Path) -> list[str]:
     enabled = {name for name, on in core.items() if on} if isinstance(core, dict) else set(core)
     for name, label in LEAKY_CORE_PLUGINS.items():
         if name in enabled:
-            found.append(f"{label} est activé dans ce coffre : les documents quittent cet ordinateur.")
+            found.append(f"Le module {label} est activé dans ce coffre (réglage par défaut d'Obsidian). Il n'envoie "
+                         "rien tant qu'aucun compte n'y est connecté, mais une connexion enverrait tous les "
+                         f"documents : désactivez-le (Paramètres d'Obsidian → modules principaux → {label}).")
     return found
 
 

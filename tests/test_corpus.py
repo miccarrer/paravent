@@ -63,6 +63,20 @@ def test_create_presets_obsidian_vault(root):
     assert settings["newFileFolderPath"] == "corpus"
 
 
+def test_create_turns_sync_and_publish_off(root):
+    import json
+
+    core = root / ".obsidian" / "core-plugins.json"
+    assert json.loads(core.read_text()) == {"sync": False, "publish": False}
+    core.write_text('{"file-explorer": true, "sync": true}')
+    obsidian.preset(root)  # turned back on by the user: kept, and warned about
+    assert json.loads(core.read_text()) == {"file-explorer": True, "sync": True, "publish": False}
+    assert "aucun compte" in obsidian.warnings(root)[0]
+    core.write_text('["file-explorer"]')  # older list format: left alone
+    obsidian.preset(root)
+    assert json.loads(core.read_text()) == ["file-explorer"]
+
+
 def test_create_refuses_folder_inside_another_vault(tmp_path):
     (tmp_path / "Notes" / ".obsidian").mkdir(parents=True)
     with pytest.raises(corpus.CorpusError, match="coffre Obsidian"):
@@ -123,7 +137,7 @@ def test_email_attachments_become_documents(root):
 def test_interrupted_import_resumes_without_twins(root, sources, monkeypatch):
     calls = []
 
-    def crash_on_second(path):
+    def crash_on_second(path, on_page=None):
         calls.append(path)
         if len(calls) == 2:
             raise KeyboardInterrupt
@@ -144,7 +158,7 @@ def test_failures_and_doubtful_pages_are_recorded(root, tmp_path, monkeypatch):
     for name in ("casse.pdf", "flou.pdf"):
         (tmp_path / name).write_bytes(name.encode())
 
-    def fake(path):
+    def fake(path, on_page=None):
         if path.stat().st_size == len(b"casse.pdf"):
             raise ValueError("PDF illisible")
         return [extract.Page(1, "net", "ocr", 0.99), extract.Page(2, "", "ocr", 0.0),
@@ -158,7 +172,7 @@ def test_failures_and_doubtful_pages_are_recorded(root, tmp_path, monkeypatch):
         review, = c.documents(corpus.REVIEW)
         assert review.detail == "page 2 vide ou illisible ; page 3 : confiance OCR 0.55"
 
-        monkeypatch.setattr(extract, "extract_pages", lambda path: [extract.Page(1, "réparé", "text")])
+        monkeypatch.setattr(extract, "extract_pages", lambda path, on_page=None: [extract.Page(1, "réparé", "text")])
         assert c.import_paths([], retry_failed=True).converted["fait"] == 1
         assert c.documents(corpus.FAILED) == []
 
@@ -167,7 +181,7 @@ def test_blank_pages_are_not_doubtful_unless_the_whole_document_is(root, tmp_pat
     (tmp_path / "verso.pdf").write_bytes(b"recto-verso")
     (tmp_path / "blanc.pdf").write_bytes(b"blanc")
 
-    def fake(path):
+    def fake(path, on_page=None):
         blank = extract.Page(2, "", "blank")
         return [extract.Page(1, "recto", "ocr", 0.97), blank] if path.stat().st_size == 11 else [blank]
 

@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def fake_pages(tmp_path, monkeypatch, documents):
         (tmp_path / name).write_bytes(b"x" * number)
         by_size[number] = pages
 
-    def fake(path):
+    def fake(path, on_page=None):
         pages = by_size[path.stat().st_size]
         if isinstance(pages, Exception):
             raise pages
@@ -121,7 +122,7 @@ def test_checklist_lists_doubts_and_failures_and_records_ticks(root, tmp_path, m
         assert "flou.pdf" not in checklist.read_text(encoding="utf-8")
 
         c.mark_checked(vide.sha256[:16])
-        monkeypatch.setattr(extract, "extract_pages", lambda path: [extract.Page(1, "réparé", "text")])
+        monkeypatch.setattr(extract, "extract_pages", lambda path, on_page=None: [extract.Page(1, "réparé", "text")])
         c.import_paths([], retry_failed=True)
         review.sync_checklist(c)
         assert "Rien à vérifier pour l'instant." in checklist.read_text(encoding="utf-8")
@@ -144,7 +145,7 @@ def test_import_names_are_safe_for_obsidian(root, tmp_path, monkeypatch):
 
 def test_cli_status_and_measures(root, capsys, monkeypatch):
     shutil.copy(FIXTURES / "courrier-scanne.pdf", root.parent)
-    monkeypatch.setattr(extract, "extract_pages", lambda path: [extract.Page(1, "", "ocr", 0.0)])
+    monkeypatch.setattr(extract, "extract_pages", lambda path, on_page=None: [extract.Page(1, "", "ocr", 0.0)])
     assert cli.main(["import", "--corpus", str(root), str(root.parent / "courrier-scanne.pdf")]) == 0
     assert "« À vérifier.md »" in capsys.readouterr().out
     text = (root / review.CHECKLIST).read_text(encoding="utf-8")
@@ -154,3 +155,30 @@ def test_cli_status_and_measures(root, capsys, monkeypatch):
     assert cli.main(["mesures", "--corpus", str(root)]) == 0
     out = capsys.readouterr().out
     assert out.startswith("Documents : 1\n") and "courrier" not in out
+
+
+def test_import_progress_without_terminal(root, capsys):
+    shutil.copy(FIXTURES / "convocation-native.pdf", root.parent)
+    assert cli.main(["import", "--corpus", str(root), str(root.parent / "convocation-native.pdf")]) == 0
+    out = capsys.readouterr().out
+    assert "[1/1] convocation-native.pdf\n  1 p. · 0 s\n" in out
+    assert "Conversion : 1 fait · 0 à vérifier · 0 en échec · en 0 s" in out
+
+
+def test_import_progress_in_terminal(capsys, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda: os.terminal_size((60, 20)))
+    progress = cli._ImportProgress()
+    progress.live = True
+    progress.document(3, 12, "un nom de fichier bien trop long pour tenir sur la ligne.pdf")
+    progress.page(1, 4)
+    drawn = capsys.readouterr().out
+    assert drawn.startswith("\r[3/12] un nom de fichier") and "…  █████░░░░░░░░░░░░░░░ page 2/4" in drawn
+    assert len(drawn) == 1 + 59  # \r, then the terminal's width less one column
+    progress.page(4, 4)
+    progress.converted(corpus.REVIEW)
+    assert "4 p. · 0 s · à vérifier" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("seconds", "shown"), [(4.4, "4 s"), (89, "89 s"), (150, "2 min"), (7300, "2 h 02")])
+def test_durations(seconds, shown):
+    assert cli._duration(seconds) == shown

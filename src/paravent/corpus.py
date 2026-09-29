@@ -66,6 +66,19 @@ class CorpusError(RuntimeError):
     pass
 
 
+class Progress:
+    """What an import tells while it converts; this one says nothing."""
+
+    def document(self, number: int, total: int, name: str) -> None:
+        pass
+
+    def page(self, done: int, total: int) -> None:
+        pass
+
+    def converted(self, status: str) -> None:
+        pass
+
+
 @dataclass
 class ImportReport:
     added: list[Path] = field(default_factory=list)
@@ -113,7 +126,8 @@ class Corpus:
     # --- import -------------------------------------------------------------
 
     def import_paths(self, paths: Iterable[Path], retry_failed: bool = False,
-                     progress: Callable[[str], None] = lambda message: None) -> ImportReport:
+                     progress: Progress | None = None) -> ImportReport:
+        progress = progress or Progress()
         report = ImportReport()
         for source in _walk(paths):
             if source.suffix.lower() not in SUPPORTED_SUFFIXES:
@@ -129,8 +143,10 @@ class Corpus:
         pending = self.db.execute(
             "SELECT * FROM documents WHERE status = ? ORDER BY imported_at, source_name", (TODO,)).fetchall()
         for number, row in enumerate(pending, start=1):
-            progress(f"[{number}/{len(pending)}] {row['source_name']}")
-            report.converted[self._convert(row)] += 1
+            progress.document(number, len(pending), row["source_name"])
+            status = self._convert(row, progress.page)
+            report.converted[status] += 1
+            progress.converted(status)
         return report
 
     def _register(self, source: Path) -> bool:
@@ -170,7 +186,7 @@ class Corpus:
                 (digest, name, source_path, original.as_posix(), parent, TODO, _now()))
         return True
 
-    def _convert(self, row: sqlite3.Row) -> str:
+    def _convert(self, row: sqlite3.Row, on_page: Callable[[int, int], None]) -> str:
         markdown = row["markdown"]
         if markdown is None:
             stem = safe_filename(Path(row["source_name"]).stem)
@@ -178,7 +194,7 @@ class Corpus:
             with self.db:
                 self.db.execute("UPDATE documents SET markdown = ? WHERE sha256 = ?", (markdown, row["sha256"]))
         try:
-            pages = extract.extract_pages(self.root / row["original"])
+            pages = extract.extract_pages(self.root / row["original"], on_page)
             body = extract.to_markdown(pages)
         except Exception as error:  # noqa: BLE001 — any failure is recorded, the import goes on
             status, detail = FAILED, f"{type(error).__name__} : {error}"

@@ -12,6 +12,7 @@ as a document of its own (see ``mail_attachments``).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from email import policy
 from email.message import EmailMessage
@@ -60,18 +61,24 @@ def convert(path: Path) -> str:
     return to_markdown(extract_pages(path))
 
 
-def extract_pages(path: Path) -> list[Page]:
+def extract_pages(path: Path, on_page: Callable[[int, int], None] | None = None) -> list[Page]:
+    """The pages of a document; ``on_page(done, total)`` is called before the first and after each."""
+    on_page = on_page or (lambda done, total: None)
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        return _pdf_pages(path)
+        return _pdf_pages(path, on_page)
     if suffix in IMAGE_SUFFIXES:
+        on_page(0, 1)
         with Image.open(path) as image:
-            return [_ocr_page(1, image)]
-    if suffix == ".docx":
-        return [Page(1, _docx_text(path), "docx")]
-    if suffix == ".eml":
-        return [Page(1, _mail_text(_read_mail(path)), "eml")]
-    raise UnsupportedFormat(f"Format non pris en charge : {path.suffix or path.name}")
+            pages = [_ocr_page(1, image)]
+    elif suffix == ".docx":
+        pages = [Page(1, _docx_text(path), "docx")]
+    elif suffix == ".eml":
+        pages = [Page(1, _mail_text(_read_mail(path)), "eml")]
+    else:
+        raise UnsupportedFormat(f"Format non pris en charge : {path.suffix or path.name}")
+    on_page(1, 1)
+    return pages
 
 
 def to_markdown(pages: list[Page]) -> str:
@@ -89,10 +96,11 @@ def to_markdown(pages: list[Page]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-def _pdf_pages(path: Path) -> list[Page]:
+def _pdf_pages(path: Path, on_page: Callable[[int, int], None]) -> list[Page]:
     pages = []
     pdf = pdfium.PdfDocument(path)
     try:
+        on_page(0, len(pdf))
         for number, page in enumerate(pdf, start=1):
             textpage = page.get_textpage()
             text = _normalize(textpage.get_text_bounded())
@@ -103,6 +111,7 @@ def _pdf_pages(path: Path) -> list[Page]:
                 image = page.render(scale=OCR_DPI / 72).to_pil()
                 pages.append(_ocr_page(number, image))
             page.close()
+            on_page(number, len(pdf))
     finally:
         pdf.close()
     return pages

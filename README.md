@@ -64,10 +64,11 @@ rangement à la souris, recherche, et l'original PDF à côté du Markdown (le c
 Propriétés est un lien). `.corpus/` y reste invisible. Paravent retrouve un document par ce champ,
 où que vous l'ayez déplacé.
 
-- `paravent init` règle Obsidian pour que les nouvelles notes aillent dans `corpus/`, et refuse
-  de créer un corpus à l'intérieur d'un autre coffre.
+- `paravent init` règle Obsidian pour que les nouvelles notes aillent dans `corpus/`, désactive
+  les modules Sync et Publish (Obsidian les active par défaut ; sans compte ils n'envoient rien,
+  mais une connexion enverrait tout), et refuse de créer un corpus à l'intérieur d'un autre coffre.
 - `paravent etat` avertit si le coffre a des plugins tiers (ils peuvent lire tous les documents),
-  ou si Obsidian Sync ou Publish y sont actifs.
+  ou si les modules Sync ou Publish y sont activés.
 
 ## IA locale (facultative)
 

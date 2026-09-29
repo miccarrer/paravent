@@ -113,7 +113,9 @@ def test_blank_verso_is_not_a_doubtful_page(tmp_path):
     for source in ("courrier-scanne.pdf", "verso-blanc.pdf"):
         recto_verso.import_pages(pdfium.PdfDocument(FIXTURES / source))
     recto_verso.save(tmp_path / "recto-verso.pdf")
-    pages = extract.extract_pages(tmp_path / "recto-verso.pdf")
+    calls = []
+    pages = extract.extract_pages(tmp_path / "recto-verso.pdf", on_page=lambda *call: calls.append(call))
+    assert calls == [(0, 2), (1, 2), (2, 2)]
     assert [page.method for page in pages] == ["ocr", "blank"]
     assert extract.to_markdown(pages).endswith("<!-- page 2 · blank -->\n\n<!-- page blanche -->\n")
 

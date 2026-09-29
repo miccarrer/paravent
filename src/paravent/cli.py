@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+import time
 from importlib.metadata import version
 from pathlib import Path
 
@@ -106,14 +108,15 @@ def _import(where: Path, sources: list[Path], retry_failed: bool) -> int:
     with corpus.Corpus(corpus.find_root(where)) as c:
         for warning in obsidian.warnings(c.root):
             print(f"⚠ {warning}")
-        report = c.import_paths(sources, retry_failed=retry_failed, progress=print)
+        progress = _ImportProgress()
+        report = c.import_paths(sources, retry_failed=retry_failed, progress=progress)
         print(f"Nouveaux : {len(report.added)} · déjà dans le corpus : {len(report.duplicates)}"
               f" · formats non pris en charge : {len(report.unsupported)}")
         for path in report.unsupported:
             print(f"  ignoré : {path}")
         converted = report.converted
         print(f"Conversion : {converted[corpus.DONE]} fait · {converted[corpus.REVIEW]} à vérifier"
-              f" · {converted[corpus.FAILED]} en échec")
+              f" · {converted[corpus.FAILED]} en échec" + progress.summary())
         _sync_checklist(c)
         return 1 if converted[corpus.FAILED] else 0
 
@@ -136,6 +139,62 @@ def _status(where: Path) -> int:
         if waiting:
             print(f"\n{len(waiting)} document(s) à ranger dans {corpus.DOCUMENTS}/{corpus.INBOX} (« paravent ranger »).")
     return 0
+
+
+class _ImportProgress(corpus.Progress):
+    """One line per document; in a terminal, redrawn page after page with a bar."""
+
+    BAR = 20
+
+    def __init__(self):
+        self.live = sys.stdout.isatty()
+        self.first = self.started = None
+        self.pages = self.done = 0
+
+    def document(self, number: int, total: int, name: str) -> None:
+        self.number, self.total, self.name = number, total, name
+        self.started = time.monotonic()
+        self.first = self.first or self.started
+        if not self.live:
+            print(f"[{number}/{total}] {name}", flush=True)
+
+    def page(self, done: int, total: int) -> None:
+        self.pages = total
+        if self.live:
+            filled = self.BAR * done // max(total, 1)
+            self._draw(f"{'█' * filled}{'░' * (self.BAR - filled)} page {min(done + 1, total)}/{total}")
+
+    def converted(self, status: str) -> None:
+        now = time.monotonic()
+        self.done += 1
+        line = f"{self.pages} p. · {_duration(now - self.started)}"
+        if status != corpus.DONE:
+            line += f" · {corpus.STATUS_LABELS[status]}"
+        left = self.total - self.number
+        if left and self.done >= 3:
+            line += f" · reste ~{_duration((now - self.first) / self.done * left)}"
+        if self.live:
+            self._draw(line)
+            print()
+        else:
+            print(f"  {line}", flush=True)
+
+    def summary(self) -> str:
+        return f" · en {_duration(time.monotonic() - self.first)}" if self.first else ""
+
+    def _draw(self, tail: str) -> None:
+        width = shutil.get_terminal_size().columns - 1
+        head = f"[{self.number}/{self.total}] "
+        room = max(width - len(head) - len(tail) - 2, 8)
+        name = self.name if len(self.name) <= room else self.name[:room - 1] + "…"
+        print("\r" + f"{head}{name}  {tail}".ljust(width)[:width], end="", flush=True)
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    minutes = round(seconds / 60)
+    return f"{minutes} min" if minutes < 90 else f"{minutes // 60} h {minutes % 60:02d}"
 
 
 def _sync_checklist(c: corpus.Corpus) -> None:
