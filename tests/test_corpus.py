@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -398,6 +399,7 @@ def test_lost_originals_block_a_reset_and_come_back_with_their_files(root, sourc
     with corpus.Corpus(spare) as c:
         c.import_paths([root / "originaux"])
     lost = sorted((root / "originaux").iterdir())[0]
+    lost.chmod(stat.S_IWRITE | stat.S_IREAD)  # originals are read-only: Windows refuses to delete them otherwise
     lost.unlink()
     with corpus.Corpus(root) as c:  # what happened: the conversion of the lost one fails
         c.db.execute("UPDATE documents SET status = 'echec', detail = 'FileNotFoundError' WHERE original = ?",
