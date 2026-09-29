@@ -5,7 +5,7 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
-from . import corpus, extract, ia, obsidian, ranger, update
+from . import corpus, extract, ia, obsidian, ranger, review, update
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("--reessayer", action="store_true", help="reconvertir aussi les documents en échec")
 
     commands.add_parser("etat", parents=[in_corpus], help="où en sont les documents importés")
+    commands.add_parser("mesures", parents=[in_corpus],
+                        help="chiffres sur la conversion, sans aucun nom : partageables tels quels")
 
     rng = commands.add_parser("ranger", parents=[in_corpus],
                               help="ranger les documents arrivés dans corpus/_a-ranger")
@@ -60,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _import(args.corpus, args.sources, args.reessayer)
             case "etat":
                 return _status(args.corpus)
+            case "mesures":
+                return _measures(args.corpus)
             case "ranger":
                 return _file(args.corpus, use_ia=not args.sans_ia)
             case "ia":
@@ -110,11 +114,13 @@ def _import(where: Path, sources: list[Path], retry_failed: bool) -> int:
         converted = report.converted
         print(f"Conversion : {converted[corpus.DONE]} fait · {converted[corpus.REVIEW]} à vérifier"
               f" · {converted[corpus.FAILED]} en échec")
+        _sync_checklist(c)
         return 1 if converted[corpus.FAILED] else 0
 
 
 def _status(where: Path) -> int:
     with corpus.Corpus(corpus.find_root(where)) as c:
+        _sync_checklist(c)
         counts = c.counts()
         print(" · ".join(f"{label} : {counts[status]}" for status, label in corpus.STATUS_LABELS.items()))
         for document in c.documents(corpus.REVIEW, corpus.FAILED):
@@ -129,6 +135,21 @@ def _status(where: Path) -> int:
         waiting = ranger.inbox_files(c.inbox)
         if waiting:
             print(f"\n{len(waiting)} document(s) à ranger dans {corpus.DOCUMENTS}/{corpus.INBOX} (« paravent ranger »).")
+    return 0
+
+
+def _sync_checklist(c: corpus.Corpus) -> None:
+    checked = review.sync_checklist(c)
+    if checked:
+        print(f"{checked} document(s) coché(s) dans « {review.CHECKLIST} » : passé(s) à « fait ».")
+    remaining = c.counts()
+    if remaining[corpus.REVIEW] or remaining[corpus.FAILED]:
+        print(f"Liste à cocher dans Obsidian : « {review.CHECKLIST} », à la racine du corpus.")
+
+
+def _measures(where: Path) -> int:
+    with corpus.Corpus(corpus.find_root(where)) as c:
+        print("\n".join(review.report(review.measure(c))))
     return 0
 
 

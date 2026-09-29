@@ -18,6 +18,7 @@ paravent init ~/MonCorpus                  # crée un corpus dans un dossier vid
 cd ~/MonCorpus
 paravent import ~/Téléchargements/scans    # fichiers ou dossiers (PDF, images, Word, e-mails)
 paravent etat                              # à faire · fait · échec · à vérifier
+paravent mesures                           # chiffres sur la conversion, sans aucun nom
 paravent ranger                            # range les documents arrivés dans corpus/_a-ranger
 paravent convert courrier.pdf -o courrier.md   # un document seul, hors corpus
 paravent update                            # vérifie et installe la dernière version
@@ -41,6 +42,15 @@ MonCorpus/
 - Chaque page est précédée d'un repère `<!-- page N · ocr · confiance min 0.94 -->`. Une ligne
   que l'OCR lit mal est signalée comme telle ; elle n'est jamais gardée sans avertissement. Un
   document qui a une page vide ou peu sûre passe « à vérifier ».
+- Les documents à vérifier sont listés dans `À vérifier.md`, à la racine du corpus (hors de
+  `corpus/`, donc jamais dans le miroir), avec un lien vers le Markdown et un vers l'original.
+  Cochez la case d'un document une fois relu (dans Obsidian, par exemple) : le prochain
+  `paravent etat` ou `paravent import` le passe à « fait ». Les échecs de conversion y sont
+  listés à part.
+- `paravent mesures` ne donne que des chiffres (documents par format et par état, pages lues
+  par couche texte ou par OCR, tranches de confiance, lignes illisibles, pages dont la couche
+  texte est très courte) : on peut les partager pour se faire aider sans rien dévoiler des
+  documents.
 - Un import interrompu reprend là où il s'était arrêté : relancez la même commande.
 - `paravent init` refuse un dossier synchronisé par OneDrive : les documents partiraient en clair
   dans le cloud.

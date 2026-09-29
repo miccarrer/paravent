@@ -173,7 +173,8 @@ class Corpus:
     def _convert(self, row: sqlite3.Row) -> str:
         markdown = row["markdown"]
         if markdown is None:
-            markdown = self._free_name(self.inbox, Path(row["source_name"]).stem).relative_to(self.root).as_posix()
+            stem = safe_filename(Path(row["source_name"]).stem)
+            markdown = self._free_name(self.inbox, stem).relative_to(self.root).as_posix()
             with self.db:
                 self.db.execute("UPDATE documents SET markdown = ? WHERE sha256 = ?", (markdown, row["sha256"]))
         try:
@@ -189,11 +190,17 @@ class Corpus:
                 mail, = self.db.execute("SELECT original FROM documents WHERE sha256 = ?", (row["parent"],)).fetchone()
                 front += f"piece_jointe_de: {_yaml_str(f'[[{mail}]]')}\n"
             front += f"importe_le: {row['imported_at'][:10]}\n---\n\n"
-            _write_atomic(self.root / markdown, front + body)
+            write_atomic(self.root / markdown, front + body)
         with self.db:
             self.db.execute("UPDATE documents SET status = ?, detail = ?, converted_at = ? WHERE sha256 = ?",
                             (status, detail, _now(), row["sha256"]))
         return status
+
+    def mark_checked(self, prefix: str) -> int:
+        """A doubtful document, compared with its original by the user, is done."""
+        with self.db:
+            return self.db.execute("UPDATE documents SET status = ? WHERE status = ? AND substr(sha256, 1, 16) = ?",
+                                   (DONE, REVIEW, prefix)).rowcount
 
     # --- queries and moves --------------------------------------------------
 
@@ -321,7 +328,8 @@ def original_of(markdown: Path) -> str | None:
 
 # --- names ------------------------------------------------------------------
 
-_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Windows forbids the first ones; Obsidian also refuses # ^ [ ] in a note's name (they break links).
+_FORBIDDEN = re.compile(r'[<>:"/\\|?*#^\[\]\x00-\x1f]')
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 MAX_NAME = 80
 
@@ -376,7 +384,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partiel")
     partial.write_text(text, encoding="utf-8", newline="\n")
