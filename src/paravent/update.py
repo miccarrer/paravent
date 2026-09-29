@@ -169,7 +169,9 @@ def windows_update_script(command: list[str], log: Path, pids: list[int]) -> str
         'Log "started $(Get-Date -Format o)"\n'
         f"Wait-Process -Id {','.join(map(str, pids))} -Timeout 120 -ErrorAction SilentlyContinue\n"
         'Log "installing $(Get-Date -Format o)"\n'
-        f"$output = & {' '.join(map(quote, command))} 2>&1 | Out-String\n"
+        # PowerShell 5.1 wraps each stderr line of a native command in an
+        # ErrorRecord; turn them back into plain text for the log.
+        f"$output = & {' '.join(map(quote, command))} 2>&1 | ForEach-Object {{ \"$_\" }} | Out-String\n"
         "$code = $LASTEXITCODE\n"
         "Log $output\n"
         'Log "paravent-update-exit=$code"\n'

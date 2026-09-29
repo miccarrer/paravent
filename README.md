@@ -28,8 +28,10 @@ paravent --version
 Paravent s'installe avec [uv](https://docs.astral.sh/uv/), qui installe lui-même Python :
 
 ```sh
-uv tool install --python 3.12 https://github.com/miccarrer/paravent/releases/latest/download/<wheel>
+uv tool install --python 3.12 https://github.com/miccarrer/paravent/releases/download/v0.1.0/paravent-0.1.0-py3-none-any.whl
 ```
+
+(adresse du paquet de la version voulue : voir la page [Releases](https://github.com/miccarrer/paravent/releases)).
 
 Les mises à jour passent ensuite par `paravent update`. Chaque version publiée fournit un
 paquet (wheel) et un fichier `latest.json` qui donne sa version, son adresse et son empreinte
