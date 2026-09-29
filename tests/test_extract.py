@@ -64,6 +64,22 @@ def test_low_confidence_lines_are_flagged(monkeypatch):
     assert page.min_confidence == 0.41
 
 
+def test_lines_rapidocr_would_drop_are_kept_and_flagged(monkeypatch):
+    assert extract._ocr_engine().text_score == 0  # RapidOCR's own filter is off
+    fake = SimpleNamespace(txts=("net", "  ", "très flou"), scores=(0.99, 0.10, 0.31))
+    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: fake)
+    page = extract._ocr_page(1, a4_page(handwritten_lu))
+    assert page.text == "net\n\ntrès flou <!-- illisible ? confiance 0.31 -->"
+    assert (page.method, page.min_confidence) == ("ocr", 0.31)
+
+
+def test_specks_read_as_letters_do_not_hide_a_blank_page(monkeypatch):
+    fake = SimpleNamespace(txts=("i:",), scores=(0.22,))
+    monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: fake)
+    assert extract._ocr_page(2, a4_page()).method == "blank"
+    assert extract._ocr_page(2, a4_page(signature)).text == "i: <!-- illisible ? confiance 0.22 -->"
+
+
 def test_blank_page_is_reported_not_invented(monkeypatch):
     monkeypatch.setattr(extract, "_ocr_engine", lambda: lambda image: SimpleNamespace(txts=None, scores=None))
     page = extract._ocr_page(3, Image.new("RGB", (10, 10)))

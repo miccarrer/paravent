@@ -29,6 +29,9 @@ OCR_DPI = 200
 MIN_TEXT_CHARS = 25
 # OCR lines scored below this are flagged in the Markdown, never silently kept.
 LOW_CONFIDENCE = 0.80
+# RapidOCR drops the lines it scores below 0.5 unless told otherwise: Paravent
+# keeps them all (flagged), and only uses this score to call a page blank.
+TEXT_SCORE = 0.5
 # A page where the OCR read nothing is blank (a verso) if, once shrunk to about
 # 50 dpi — isolated specks of the scan fade out — and without its margins,
 # almost none of it is ink, i.e. clearly darker than the paper. The recto
@@ -119,15 +122,19 @@ def _pdf_pages(path: Path, on_page: Callable[[int, int], None]) -> list[Page]:
 
 def _ocr_page(number: int, image: Image.Image) -> Page:
     result = _ocr_engine()(image.convert("RGB"))
-    if not result.txts:
-        return Page(number, "", "blank") if is_blank(image) else Page(number, "", "ocr", 0.0)
+    read = [(text.strip(), float(score)) for text, score in zip(result.txts or (), result.scores or ()) if text.strip()]
+    # Almost no ink and nothing RapidOCR would call text: specks read as letters.
+    if all(score < TEXT_SCORE for _, score in read) and is_blank(image):
+        return Page(number, "", "blank")
+    if not read:
+        return Page(number, "", "ocr", 0.0)
     lines = []
-    for text, score in zip(result.txts, result.scores):
+    for text, score in read:
         if score < LOW_CONFIDENCE:
             text += f" <!-- illisible ? confiance {score:.2f} -->"
         lines.append(text)
     # One OCR line per paragraph: paragraph rebuilding comes later.
-    return Page(number, "\n\n".join(lines), "ocr", min(result.scores))
+    return Page(number, "\n\n".join(lines), "ocr", min(score for _, score in read))
 
 
 def is_blank(image: Image.Image) -> bool:
@@ -262,4 +269,4 @@ def _normalize(text: str) -> str:
 def _ocr_engine():
     from rapidocr import RapidOCR
 
-    return RapidOCR(params={"Global.log_level": "error"})
+    return RapidOCR(params={"Global.log_level": "error", "Global.text_score": 0.0})
