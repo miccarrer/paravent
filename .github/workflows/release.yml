@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Le tag correspond à la version du projet
+        run: |
+          version=$(uv version --short)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME ≠ version $version"; exit 1; }
+      - run: uv build --wheel
+      - name: Manifeste de mise à jour
+        run: |
+          wheel=$(ls dist/*.whl)
+          name=$(basename "$wheel")
+          sha=$(sha256sum "$wheel" | cut -d' ' -f1)
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$name"
+          printf '{"version": "%s", "wheel": "%s", "sha256": "%s"}\n' "$(uv version --short)" "$url" "$sha" > dist/latest.json
+          cat dist/latest.json
+      - name: Publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl dist/latest.json --title "Paravent $GITHUB_REF_NAME" --generate-notes
