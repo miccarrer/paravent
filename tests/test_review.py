@@ -38,8 +38,9 @@ def test_pages_are_read_back_from_markers():
         extract.Page(3, "", "ocr", 0.0),
     ])
     pages = review.pages_of("---\noriginal: x\n---\n\n" + markdown)
-    assert pages == [review.Page("text", 150, None, 0), review.Page("ocr", len("ligne\n\nfloue"), 0.61, 1),
-                     review.Page("ocr", 0, 0.0, 0)]
+    assert pages == [review.Page("text", 150, None),
+                     review.Page("ocr", len("ligne\n\nfloue"), 0.61, 2, [review.Flagged(5, 0.61, 1.0, True)]),
+                     review.Page("ocr", 0, 0.0)]
     assert review.pages_of(extract.to_markdown([extract.Page(1, "bail", "docx")])) == []
 
 
@@ -89,6 +90,36 @@ def test_measures_flag_short_text_layers_and_illegible_lines(root, tmp_path, mon
     text = "\n".join(review.report(m))
     assert "pages texte de moins de 200 caractères : 1, dans 1 document(s)" in text
     assert "OCR, confiance minimale par page : ≥ 0,95 1 · 0,90–0,95 0 · 0,80–0,90 0 · < 0,80 1" in text
+
+
+def flag(text, score):
+    return f"{text} <!-- illisible ? confiance {score:.2f} -->"
+
+
+def test_measures_describe_illegible_lines_without_their_text(root, tmp_path, monkeypatch):
+    good = [f"ligne {n} bien lue" for n in range(4)]
+    letter = [flag("§", 0.31), *good, flag("Montant dû au titre de l'année", 0.66), *good, flag("Jx", 0.75)]
+    sources = fake_pages(tmp_path, monkeypatch, {
+        "lettre.pdf": [extract.Page(1, "\n\n".join(letter), "ocr", 0.31)],
+        "releve.pdf": [extract.Page(1, "\n\n".join([flag("12,50", 0.79)] + ["ok"] * 39), "ocr", 0.79)],
+        "net.pdf": [extract.Page(1, "\n\n".join(["ok"] * 10), "ocr", 0.97)],
+    })
+    with corpus.Corpus(root) as c:
+        c.import_paths(sources)
+        m = review.measure(c)
+    assert m.ocr_lines == 11 + 40 + 10 and m.illegible_lines == 4
+    assert m.flagged_lengths == {"1–3": 2, "4–15": 1, "> 15": 1}
+    assert m.flagged_without_letters == 2  # "§" and "12,50"
+    assert m.flagged_confidence == {"< 0,50": 1, "0,50–0,70": 1, "0,70–0,80": 2}
+    assert m.flagged_places == {"haut": 2, "milieu": 1, "bas": 1}
+    assert sorted(m.flagged_by_document) == [(1, 40), (3, 11)]
+    text = "\n".join(review.report(m))
+    assert "Lignes OCR : 61 · « illisible ? » 4 (6,6 %)" in text
+    assert "place dans la page (premiers et derniers 15 % des lignes) : haut 2 · milieu 1 · bas 1" in text
+    assert "part des lignes illisibles, par document touché : < 5 % 1 · 5–20 % 0 · > 20 % 1" in text
+    assert "les 2 documents les plus touchés : 100 % des lignes illisibles ; dans chacun, 27 % · 2,5 % de ses lignes" \
+        in text
+    assert "Montant" not in text and "Jx" not in text
 
 
 def test_empty_corpus_measures(root):

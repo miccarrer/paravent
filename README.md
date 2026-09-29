@@ -50,8 +50,9 @@ MonCorpus/
   `paravent etat` ou `paravent import` le passe à « fait ». Les échecs de conversion y sont
   listés à part.
 - `paravent mesures` ne donne que des chiffres (documents par format et par état, pages lues
-  par couche texte ou par OCR, tranches de confiance, lignes illisibles, pages dont la couche
-  texte est très courte) : on peut les partager pour se faire aider sans rien dévoiler des
+  par couche texte ou par OCR, tranches de confiance, pages dont la couche texte est très courte,
+  et les lignes illisibles décrites sans leur texte : longueur, confiance, place dans la page,
+  concentration par document) : on peut les partager pour se faire aider sans rien dévoiler des
   documents.
 - Un import interrompu reprend là où il s'était arrêté : relancez la même commande.
 - `paravent init` refuse un dossier synchronisé par OneDrive : les documents partiraient en clair

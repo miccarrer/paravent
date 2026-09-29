@@ -33,20 +33,45 @@ TEXT_RANGES = [(SHORT_TEXT, f"< {SHORT_TEXT}"), (1000, f"{SHORT_TEXT}–999"), (
 CONFIDENCE_RANGES = [(extract.LOW_CONFIDENCE, "< 0,80"), (0.90, "0,80–0,90"), (0.95, "0,90–0,95"),
                      (float("inf"), "≥ 0,95")]
 
+# The flagged OCR lines, described without their text: how long, how sure, where
+# in the page, letters or not. Logos, signatures and stamps tend to give short
+# fragments without letters at the top or bottom; a pale or small-print scan,
+# long lines anywhere.
+LENGTH_RANGES = [(4, "1–3"), (16, "4–15"), (float("inf"), "> 15")]
+FLAGGED_CONFIDENCE_RANGES = [(0.50, "< 0,50"), (0.70, "0,50–0,70"), (float("inf"), "0,70–0,80")]
+EDGE = 0.15  # first and last 15 % of a page's lines: its top and bottom
+SHARE_RANGES = [(0.05, "< 5 %"), (0.20, "5–20 %"), (float("inf"), "> 20 %")]
+
 _PAGE = re.compile(r"^<!-- page \d+ · (\w+)(?: · confiance min ([\d.]+))? -->$", re.MULTILINE)
 _UNPAGED = re.compile(rf"^<!-- ({'|'.join(sorted(extract.UNPAGED))}) -->$", re.MULTILINE)
-_ILLEGIBLE = re.compile(r"<!-- illisible \? confiance")
+_ILLEGIBLE = re.compile(r"<!-- illisible \? confiance ([\d.]+) -->")
+_PARAGRAPHS = re.compile(r"\n\s*\n")
 _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 # --- figures ------------------------------------------------------------------
 
 @dataclass
+class Flagged:
+    """An OCR line flagged « illisible ? », without its text."""
+
+    chars: int
+    confidence: float
+    position: float  # 0 = first line of the page, 1 = last
+    letters: bool
+
+
+@dataclass
 class Page:
     method: str  # "text", "ocr" or "blank"
     chars: int  # without the comments Paravent adds
     confidence: float | None
-    illegible: int  # OCR lines flagged « illisible ? »
+    lines: int = 0  # OCR lines (one paragraph each)
+    flagged: list[Flagged] = field(default_factory=list)
+
+    @property
+    def illegible(self) -> int:
+        return len(self.flagged)
 
 
 def pages_of(markdown: str) -> list[Page]:
@@ -56,8 +81,16 @@ def pages_of(markdown: str) -> list[Page]:
     for marker, following in zip(markers, [*markers[1:], None]):
         body = markdown[marker.end():following.start() if following else len(markdown)]
         confidence = marker.group(2)
-        pages.append(Page(marker.group(1), len(_COMMENT.sub("", body).strip()),
-                          float(confidence) if confidence else None, len(_ILLEGIBLE.findall(body))))
+        page = Page(marker.group(1), len(_COMMENT.sub("", body).strip()), float(confidence) if confidence else None)
+        if page.method == "ocr":
+            lines = [line for line in _PARAGRAPHS.split(body) if _COMMENT.sub("", line).strip()]
+            page.lines = len(lines)
+            for index, line in enumerate(lines):
+                if flag := _ILLEGIBLE.search(line):
+                    text = _COMMENT.sub("", line).strip()
+                    page.flagged.append(Flagged(len(text), float(flag.group(1)), index / max(len(lines) - 1, 1),
+                                                any(char.isalpha() for char in text)))
+        pages.append(page)
     return pages
 
 
@@ -73,6 +106,12 @@ class Measures:
     text_ranges: Counter = field(default_factory=Counter)
     confidence_ranges: Counter = field(default_factory=Counter)
     short_text_documents: int = 0
+    ocr_lines: int = 0
+    flagged_lengths: Counter = field(default_factory=Counter)
+    flagged_confidence: Counter = field(default_factory=Counter)
+    flagged_places: Counter = field(default_factory=Counter)  # haut / milieu / bas
+    flagged_without_letters: int = 0
+    flagged_by_document: list[tuple[int, int]] = field(default_factory=list)  # (flagged, OCR lines)
     illegible_lines: int = 0
     illegible_documents: int = 0
     pages_per_document: list[int] = field(default_factory=list)
@@ -112,7 +151,7 @@ def _measure_document(m: Measures, text: str) -> None:
     methods = {page.method for page in pages} - {"blank"}
     m.kinds["blanc" if not methods else "mixte" if len(methods) > 1 else "texte" if methods == {"text"} else "OCR"] += 1
     m.pages_per_document.append(len(pages))
-    short = illegible = 0
+    short = illegible = lines = 0
     for page in pages:
         if page.method == "blank" or not page.chars:
             m.pages["blanches" if page.method == "blank" else "vides"] += 1
@@ -124,6 +163,16 @@ def _measure_document(m: Measures, text: str) -> None:
         elif page.confidence is not None:
             m.confidence_ranges[_range(page.confidence, CONFIDENCE_RANGES)] += 1
         illegible += page.illegible
+        lines += page.lines
+        for flagged in page.flagged:
+            m.flagged_lengths[_range(flagged.chars, LENGTH_RANGES)] += 1
+            m.flagged_confidence[_range(flagged.confidence, FLAGGED_CONFIDENCE_RANGES)] += 1
+            m.flagged_places["haut" if flagged.position <= EDGE else "bas" if flagged.position >= 1 - EDGE
+                             else "milieu"] += 1
+            m.flagged_without_letters += not flagged.letters
+    m.ocr_lines += lines
+    if illegible:
+        m.flagged_by_document.append((illegible, lines))
     m.short_text_documents += short > 0
     m.illegible_lines += illegible
     m.illegible_documents += illegible > 0
@@ -163,7 +212,34 @@ def report(m: Measures) -> list[str]:
         lines.append("  OCR, confiance minimale par page : "
                      + _join(m.confidence_ranges, [l for _, l in reversed(CONFIDENCE_RANGES)]))
         lines.append(f"  lignes « illisible ? » : {m.illegible_lines}, dans {m.illegible_documents} document(s)")
+    if m.ocr_lines:
+        lines += _flagged_report(m)
     return lines
+
+
+def _flagged_report(m: Measures) -> list[str]:
+    share = m.illegible_lines / m.ocr_lines
+    lines = [f"Lignes OCR : {m.ocr_lines} · « illisible ? » {m.illegible_lines} ({_percent(share)})"]
+    if not m.illegible_lines:
+        return lines
+    by_document = sorted(m.flagged_by_document, reverse=True)
+    top = by_document[:3]
+    shares = Counter(_range(flagged / total, SHARE_RANGES) for flagged, total in by_document)
+    lines += [
+        "  longueur (caractères) : " + _join(m.flagged_lengths, [label for _, label in LENGTH_RANGES]),
+        f"  sans aucune lettre : {m.flagged_without_letters}",
+        "  confiance : " + _join(m.flagged_confidence, [label for _, label in reversed(FLAGGED_CONFIDENCE_RANGES)]),
+        f"  place dans la page (premiers et derniers {_percent(EDGE)} des lignes) : "
+        + _join(m.flagged_places, ["haut", "milieu", "bas"]),
+        "  part des lignes illisibles, par document touché : " + _join(shares, [label for _, label in SHARE_RANGES]),
+        f"  les {len(top)} documents les plus touchés : {_percent(sum(f for f, _ in top) / m.illegible_lines)}"
+        " des lignes illisibles ; dans chacun, " + " · ".join(_percent(f / t) for f, t in top) + " de ses lignes",
+    ]
+    return lines
+
+
+def _percent(value: float) -> str:
+    return f"{value:.0%}".replace("%", " %") if value >= 0.1 else f"{value:.1%}".replace(".", ",").replace("%", " %")
 
 
 def _join(counts: Counter, order: list[str], hide_zero: bool = False) -> str:
