@@ -183,11 +183,15 @@ class _ImportProgress(corpus.Progress):
         return f" · en {_duration(time.monotonic() - self.first)}" if self.first else ""
 
     def _draw(self, tail: str) -> None:
-        width = shutil.get_terminal_size().columns - 1
+        width = _terminal_width() - 1
         head = f"[{self.number}/{self.total}] "
         room = max(width - len(head) - len(tail) - 2, 8)
         name = self.name if len(self.name) <= room else self.name[:room - 1] + "…"
         print("\r" + f"{head}{name}  {tail}".ljust(width)[:width], end="", flush=True)
+
+
+def _terminal_width() -> int:
+    return shutil.get_terminal_size().columns
 
 
 def _duration(seconds: float) -> str:

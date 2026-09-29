@@ -44,7 +44,8 @@ FLAGGED_CONFIDENCE_RANGES = [(0.50, "< 0,50"), (0.70, "0,50–0,70"), (float("in
 EDGE = 0.15  # first and last 15 % of a page's lines: its top and bottom
 SHARE_RANGES = [(0.05, "< 5 %"), (0.20, "5–20 %"), (float("inf"), "> 20 %")]
 
-_PAGE = re.compile(r"^<!-- page \d+ · (\w+)(?: · (\d+) lignes)?(?: · confiance min ([\d.]+))? -->$", re.MULTILINE)
+_PAGE = re.compile(r"^<!-- page \d+ · (\w+)(?: · (\d+) lignes)?(?: · (\d+) fragments)?"
+                   r"(?: · confiance min ([\d.]+))? -->$", re.MULTILINE)
 _UNPAGED = re.compile(rf"^<!-- ({'|'.join(sorted(extract.UNPAGED))}) -->$", re.MULTILINE)
 # Since paragraphs are rebuilt: ==text==<!-- illisible ? confiance 0.61 · ligne 12/40 -->.
 _FLAGGED = re.compile(r"==(.*?)==<!-- illisible \? confiance ([\d.]+) · ligne (\d+)/(\d+) -->", re.DOTALL)
@@ -71,8 +72,9 @@ class Page:
     method: str  # "text", "ocr" or "blank"
     chars: int  # without the comments Paravent adds
     confidence: float | None
-    lines: int = 0  # OCR lines (one paragraph each)
+    lines: int = 0  # OCR lines in the text
     flagged: list[Flagged] = field(default_factory=list)
+    noise: int = 0  # short fragments below 0.5, set apart as probable noise
 
     @property
     def illegible(self) -> int:
@@ -85,9 +87,9 @@ def pages_of(markdown: str) -> list[Page]:
     pages = []
     for marker, following in zip(markers, [*markers[1:], None]):
         body = markdown[marker.end():following.start() if following else len(markdown)]
-        method, lines, confidence = marker.groups()
+        method, lines, noise, confidence = marker.groups()
         page = Page(method, len(_COMMENT.sub("", body).replace("==", "").strip()),
-                    float(confidence) if confidence else None)
+                    float(confidence) if confidence else None, noise=int(noise or 0))
         if method == "ocr" and lines:
             page.lines = int(lines)
             page.flagged = [_flagged(text, score, (int(line) - 1) / max(int(total) - 1, 1))
@@ -119,6 +121,7 @@ class Measures:
     confidence_ranges: Counter = field(default_factory=Counter)
     short_text_documents: int = 0
     ocr_lines: int = 0
+    noise_fragments: int = 0
     flagged_lengths: Counter = field(default_factory=Counter)
     flagged_confidence: Counter = field(default_factory=Counter)
     flagged_places: Counter = field(default_factory=Counter)  # haut / milieu / bas
@@ -165,6 +168,7 @@ def _measure_document(m: Measures, text: str) -> None:
     m.pages_per_document.append(len(pages))
     short = illegible = lines = 0
     for page in pages:
+        m.noise_fragments += page.noise
         if page.method == "blank" or not page.chars:
             m.pages["blanches" if page.method == "blank" else "vides"] += 1
             continue
@@ -224,14 +228,15 @@ def report(m: Measures) -> list[str]:
         lines.append("  OCR, confiance minimale par page : "
                      + _join(m.confidence_ranges, [l for _, l in reversed(CONFIDENCE_RANGES)]))
         lines.append(f"  lignes « illisible ? » : {m.illegible_lines}, dans {m.illegible_documents} document(s)")
-    if m.ocr_lines:
+    if m.ocr_lines or m.noise_fragments:
         lines += _flagged_report(m)
     return lines
 
 
 def _flagged_report(m: Measures) -> list[str]:
-    share = m.illegible_lines / m.ocr_lines
-    lines = [f"Lignes OCR : {m.ocr_lines} · « illisible ? » {m.illegible_lines} ({_percent(share)})"]
+    share = m.illegible_lines / max(m.ocr_lines, 1)
+    lines = [f"Lignes OCR : {m.ocr_lines} · « illisible ? » {m.illegible_lines} ({_percent(share)})"
+             f" · fragments mis à part (bruit probable) : {m.noise_fragments}"]
     if not m.illegible_lines:
         return lines
     by_document = sorted(m.flagged_by_document, reverse=True)

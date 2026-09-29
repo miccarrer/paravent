@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -34,6 +34,10 @@ LOW_CONFIDENCE = 0.80
 # RapidOCR drops the lines it scores below 0.5 unless told otherwise: Paravent
 # keeps them all (flagged), and only uses this score to call a page blank.
 TEXT_SCORE = 0.5
+# A fragment this short below TEXT_SCORE is most likely a logo, a stamp or a
+# speck (measured on a real corpus: 85 % of what RapidOCR used to drop). It is
+# kept, in a comment at the end of the page, out of the text and of the review.
+NOISE_MAX_CHARS = 3
 # A page where the OCR read nothing is blank (a verso) if, once shrunk to about
 # 50 dpi — isolated specks of the scan fade out — and without its margins,
 # almost none of it is ink, i.e. clearly darker than the paper. The recto
@@ -61,6 +65,7 @@ class Page:
     method: str  # "text", "ocr" or "blank" for PDF pages and images, "docx" or "eml" for unpaged sources
     min_confidence: float | None = None
     lines: int | None = None  # pieces the OCR read, flags number them « ligne i/n »
+    noise: list[tuple[str, float]] = field(default_factory=list)  # probable noise, out of the text
 
 
 def convert(path: Path) -> str:
@@ -96,11 +101,16 @@ def to_markdown(pages: list[Page]) -> str:
         header = f"<!-- page {page.number} · {page.method}"
         if page.lines is not None:
             header += f" · {page.lines} lignes"
+        if page.noise:
+            header += f" · {len(page.noise)} fragments"
         if page.min_confidence is not None:
             header += f" · confiance min {page.min_confidence:.2f}"
         blocks.append(header + " -->")
         empty = "<!-- page blanche -->" if page.method == "blank" else "<!-- page vide ou illisible -->"
         blocks.append(page.text or empty)
+        if page.noise:
+            fragments = " · ".join(f"« {text.replace('--', '- -')} » {score:.2f}" for text, score in page.noise)
+            blocks.append(f"<!-- bruit probable, hors du texte : {fragments} -->")
     return "\n\n".join(blocks) + "\n"
 
 
@@ -147,8 +157,10 @@ def _ocr_page(number: int, image: Image.Image) -> Page:
     # Almost no ink and nothing RapidOCR would call text: specks read as letters.
     if all(piece.score < TEXT_SCORE for piece in pieces) and is_blank(image):
         return Page(number, "", "blank")
+    noise = [(piece.text, piece.score) for piece in layout.reading_order(pieces) if _noise(piece)]
+    pieces = [piece for piece in pieces if not _noise(piece)]
     if not pieces:
-        return Page(number, "", "ocr", 0.0)
+        return Page(number, "", "ocr", 0.0, 0, noise)
 
     def render(piece: layout.Piece, line: int) -> str:
         if piece.score >= LOW_CONFIDENCE:
@@ -156,7 +168,12 @@ def _ocr_page(number: int, image: Image.Image) -> Page:
         # Highlighted in Obsidian; the comment tells how sure, and where to look in the original.
         return f"=={piece.text}==<!-- illisible ? confiance {piece.score:.2f} · ligne {line}/{len(pieces)} -->"
 
-    return Page(number, layout.paragraphs(pieces, render), "ocr", min(piece.score for piece in pieces), len(pieces))
+    text = layout.paragraphs(pieces, render)
+    return Page(number, text, "ocr", min(piece.score for piece in pieces), len(pieces), noise)
+
+
+def _noise(piece: layout.Piece) -> bool:
+    return piece.score < TEXT_SCORE and len(piece.text) <= NOISE_MAX_CHARS
 
 
 def is_blank(image: Image.Image) -> bool:

@@ -83,6 +83,10 @@ class _Row:
         return any(gap > COLUMN_GAP * self.char_width for gap in gaps)
 
 
+def reading_order(pieces: list[Piece]) -> list[Piece]:
+    return [piece for row in _rows(pieces) for piece in row.pieces]
+
+
 def paragraphs(pieces: list[Piece], render: Callable[[Piece, int], str] = lambda piece, number: piece.text) -> str:
     """The page's text, one paragraph per block; ``render`` writes each piece,
     numbered from 1 in reading order (to flag the doubtful ones)."""

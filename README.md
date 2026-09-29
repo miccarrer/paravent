@@ -47,7 +47,9 @@ MonCorpus/
   Un passage que l'OCR lit mal est **surligné** (`==…==`, en jaune dans Obsidian) et suivi de sa
   confiance et de sa place dans la page (`<!-- illisible ? confiance 0.61 · ligne 12/40 -->`) ;
   il n'est ni gardé sans avertissement, ni jeté (RapidOCR écarte d'ordinaire les lignes sous
-  0,5 : pas ici). Un
+  0,5 : pas ici). Seuls les fragments de 3 caractères au plus lus sous 0,5 (logos, tampons,
+  poussières, pour l'essentiel) sont mis à part : hors du texte, dans un commentaire en fin de
+  page, sans compter pour « à vérifier ». Un
   document qui a une page vide ou peu sûre passe « à vérifier ». Une page blanche (un verso) est
   reconnue comme telle et ne compte pas : il faut que l'OCR n'y lise rien et qu'elle n'ait
   presque pas d'encre, si bien qu'une signature ou un mot au crayon la laissent « à vérifier ».

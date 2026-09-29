@@ -1,4 +1,3 @@
-import os
 import shutil
 from pathlib import Path
 
@@ -38,6 +37,15 @@ def test_flags_inside_rebuilt_paragraphs_are_read_back():
     page, = review.pages_of(markdown)
     assert (page.lines, page.chars) == (40, len("début § suite Montant dû"))
     assert page.flagged == [review.Flagged(1, 0.41, 0.0, False), review.Flagged(10, 0.66, 1.0, True)]
+
+
+def test_noise_fragments_are_counted_apart():
+    page = extract.Page(1, "texte net", "ocr", 0.97, lines=1, noise=[("§", 0.31), ("i:", 0.2)])
+    empty = extract.Page(2, "", "ocr", 0.0, lines=0, noise=[("x", 0.1)])
+    m = review.Measures()
+    review._measure_document(m, extract.to_markdown([page, empty]))
+    assert (m.noise_fragments, m.ocr_lines, m.illegible_lines, m.pages["vides"]) == (3, 1, 0, 1)
+    assert "fragments mis à part (bruit probable) : 3" in "\n".join(review._flagged_report(m))
 
 
 def test_pages_are_read_back_from_markers():
@@ -207,7 +215,7 @@ def test_import_progress_without_terminal(root, capsys):
 
 
 def test_import_progress_in_terminal(capsys, monkeypatch):
-    monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda: os.terminal_size((60, 20)))
+    monkeypatch.setattr(cli, "_terminal_width", lambda: 60)  # not shutil's: pytest uses it too
     progress = cli._ImportProgress()
     progress.live = True
     progress.document(3, 12, "un nom de fichier bien trop long pour tenir sur la ligne.pdf")

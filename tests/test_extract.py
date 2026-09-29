@@ -91,7 +91,24 @@ def test_lines_rapidocr_would_drop_are_kept_and_flagged(monkeypatch):
 def test_specks_read_as_letters_do_not_hide_a_blank_page(monkeypatch):
     fake_ocr(monkeypatch, ("i:", 0.22))
     assert extract._ocr_page(2, a4_page()).method == "blank"
-    assert extract._ocr_page(2, a4_page(signature)).text == "==i:==<!-- illisible ? confiance 0.22 · ligne 1/1 -->"
+    signed = extract._ocr_page(2, a4_page(signature))  # not blank: an empty page to look at, noise kept aside
+    assert (signed.method, signed.text, signed.noise) == ("ocr", "", [("i:", 0.22)])
+    assert extract.to_markdown([signed]) == (
+        "<!-- page 2 · ocr · 0 lignes · 1 fragments · confiance min 0.00 -->\n\n<!-- page vide ou illisible -->"
+        "\n\n<!-- bruit probable, hors du texte : « i: » 0.22 -->\n")
+
+
+def test_short_fragments_below_half_are_set_apart_as_noise(monkeypatch):
+    fake_ocr(monkeypatch, ("§", 0.31), ("une phrase qui court sur", 0.97), ("deux lignes.", 0.95), ("-->", 0.12),
+             ("ab", 0.61), ("très flou mais long", 0.18))
+    page = extract._ocr_page(1, Image.new("RGB", (10, 10)))
+    assert page.noise == [("§", 0.31), ("-->", 0.12)]
+    assert (page.lines, page.min_confidence) == (4, 0.18)
+    markdown = extract.to_markdown([page])
+    assert "une phrase qui court sur deux lignes." in markdown
+    assert "==ab==<!-- illisible ? confiance 0.61 · ligne 3/4 -->" in markdown  # short but above 0.5: flagged
+    assert "==très flou mais long==" in markdown  # below 0.5 but long: flagged
+    assert markdown.endswith("<!-- bruit probable, hors du texte : « § » 0.31 · « - -> » 0.12 -->\n")
 
 
 def test_blank_page_is_reported_not_invented(monkeypatch):
