@@ -146,19 +146,25 @@ def _text_layer_pieces(textpage, page_height: float) -> list[layout.Piece]:
     return pieces
 
 
-def _ocr_page(number: int, image: Image.Image) -> Page:
-    result = _ocr_engine()(image.convert("RGB"))
+def ocr_pieces(image: Image.Image, engine=None) -> list[layout.Piece]:
+    """What the OCR reads on a page, piece by piece, with boxes and scores."""
+    result = (engine or _ocr_engine())(image.convert("RGB"))
     pieces = []
     boxes = result.boxes if result.boxes is not None else ()  # a numpy array: no « or () »
     for text, score, box in zip(result.txts or (), result.scores or (), boxes):
         if text.strip():
             xs, ys = [point[0] for point in box], [point[1] for point in box]
             pieces.append(layout.Piece(" ".join(text.split()), min(xs), min(ys), max(xs), max(ys), float(score)))
+    return pieces
+
+
+def _ocr_page(number: int, image: Image.Image, engine=None) -> Page:
+    pieces = ocr_pieces(image, engine)
     # Almost no ink and nothing RapidOCR would call text: specks read as letters.
     if all(piece.score < TEXT_SCORE for piece in pieces) and is_blank(image):
         return Page(number, "", "blank")
-    noise = [(piece.text, piece.score) for piece in layout.reading_order(pieces) if _noise(piece)]
-    pieces = [piece for piece in pieces if not _noise(piece)]
+    noise = [(piece.text, piece.score) for piece in layout.reading_order(pieces) if is_noise(piece)]
+    pieces = [piece for piece in pieces if not is_noise(piece)]
     if not pieces:
         return Page(number, "", "ocr", 0.0, 0, noise)
 
@@ -172,7 +178,7 @@ def _ocr_page(number: int, image: Image.Image) -> Page:
     return Page(number, text, "ocr", min(piece.score for piece in pieces), len(pieces), noise)
 
 
-def _noise(piece: layout.Piece) -> bool:
+def is_noise(piece: layout.Piece) -> bool:
     return piece.score < TEXT_SCORE and len(piece.text) <= NOISE_MAX_CHARS
 
 

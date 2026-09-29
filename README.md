@@ -133,12 +133,18 @@ peut pas être remplacé.
 uv sync
 uv run pytest
 uv run python scripts/ci_update_scenario.py   # installation → conversion → mise à jour, isolé dans un dossier temporaire
-uv run python scripts/banc.py lignes --corpus ~/MonCorpus   # contrôler à l'œil des lignes « illisible ? »
+uv run python scripts/banc.py lignes --corpus ~/MonCorpus     # contrôler à l'œil des lignes « illisible ? »
+uv run python scripts/banc.py preparer --corpus ~/MonCorpus   # pages à corriger à la main : la référence
+uv run python scripts/banc.py comparer --corpus ~/MonCorpus   # chaque chaîne candidate contre la référence
 ```
 
 `scripts/banc.py` mesure la conversion sur de vrais documents sans les montrer à personne : ce
 qu'il écrit va dans `_banc/` à la racine du corpus (hors de `corpus/`, donc jamais dans le
-miroir), et ce qu'il affiche n'est fait que de chiffres.
+miroir), et ce qu'il affiche n'est fait que de chiffres. `comparer` met en concurrence la chaîne
+actuelle et des variantes (300 ppp, modèles OCR PP-OCRv6 medium ou PP-OCRv5 latin, tableaux,
+mise en page PP-DocLayout v2) : taux d'erreur par caractère et par mot, cellules de tableau
+justes, secondes par page. Leurs modèles se téléchargent au premier usage (modelscope.cn) ; ils
+ne servent qu'au banc, pas à Paravent.
 
 La CI (GitHub Actions) exécute les tests et ce scénario sous **Linux et Windows**. Pousser un
 tag `vX.Y.Z` publie la version, mais seulement si la CI passe sur les deux systèmes.
