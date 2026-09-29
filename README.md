@@ -20,6 +20,7 @@ paravent import ~/Téléchargements/scans    # fichiers ou dossiers (PDF, images
 paravent etat                              # à faire · fait · échec · à vérifier
 paravent mesures                           # chiffres sur la conversion, sans aucun nom
 paravent reconvertir                       # refait la conversion après une mise à jour (--essai : compter)
+paravent reinitialiser                     # tout reconvertir depuis les originaux ; le reste est mis de côté
 paravent ranger                            # range les documents arrivés dans corpus/_a-ranger
 paravent convert courrier.pdf -o courrier.md   # un document seul, hors corpus
 paravent update                            # vérifie et installe la dernière version
@@ -71,6 +72,14 @@ MonCorpus/
   réécrit là où il se trouve, l'ancienne version est gardée dans `.corpus/reconversions/`, et
   un document coché dans `À vérifier.md` reste « fait ». Interrompue, la commande reprend là
   où elle s'était arrêtée.
+- `paravent reinitialiser` repart de zéro sans rien réimporter : les originaux et la liste des
+  documents sont gardés, tout le reste de la racine (le Markdown, le rangement, `À vérifier.md`)
+  est déplacé dans `.corpus/reinitialisations/<date>/`, puis tout est reconverti. Il faut taper
+  `OUI` pour confirmer. `paravent import` sans argument reprend une conversion interrompue.
+- Un original supprimé par erreur dans `originaux/` se restaure en réimportant son fichier :
+  Paravent reconnaît son contenu (même empreinte SHA-256), le remet en place et reconvertit le
+  document s'il avait échoué. `paravent etat` signale les originaux manquants, et
+  `paravent reinitialiser` refuse de tourner tant qu'il en manque.
 - `paravent init` refuse un dossier synchronisé par OneDrive : les documents partiraient en clair
   dans le cloud.
 

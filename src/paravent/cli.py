@@ -34,10 +34,14 @@ def main(argv: list[str] | None = None) -> int:
                            help="dossier du corpus (sinon : le dossier courant ou un de ses parents)")
 
     imp = commands.add_parser("import", parents=[in_corpus], help="importer des fichiers ou des dossiers")
-    imp.add_argument("sources", type=Path, nargs="+")
+    imp.add_argument("sources", type=Path, nargs="*", help="sans rien : reprendre les documents en attente")
     imp.add_argument("--reessayer", action="store_true", help="reconvertir aussi les documents en échec")
 
     commands.add_parser("etat", parents=[in_corpus], help="où en sont les documents importés")
+    rst = commands.add_parser("reinitialiser", parents=[in_corpus],
+                              help="tout reconvertir depuis les originaux (le reste est mis de côté)")
+    rst.add_argument("--oui", action="store_true", help="ne pas demander de confirmation")
+
     rec = commands.add_parser("reconvertir", parents=[in_corpus],
                               help="refaire la conversion des documents dont le Markdown n'a pas été modifié")
     rec.add_argument("--essai", action="store_true", help="compter seulement, sans rien réécrire")
@@ -72,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _measures(args.corpus)
             case "reconvertir":
                 return _reconvert(args.corpus, dry_run=args.essai)
+            case "reinitialiser":
+                return _reset(args.corpus, assume_yes=args.oui)
             case "ranger":
                 return _file(args.corpus, use_ia=not args.sans_ia)
             case "ia":
@@ -117,7 +123,8 @@ def _import(where: Path, sources: list[Path], retry_failed: bool) -> int:
         progress = _ImportProgress()
         report = c.import_paths(sources, retry_failed=retry_failed, progress=progress)
         print(f"Nouveaux : {len(report.added)} · déjà dans le corpus : {len(report.duplicates)}"
-              f" · formats non pris en charge : {len(report.unsupported)}")
+              f" · formats non pris en charge : {len(report.unsupported)}"
+              + (f" · originaux restaurés : {len(report.restored)}" if report.restored else ""))
         for path in report.unsupported:
             print(f"  ignoré : {path}")
         converted = report.converted
@@ -139,6 +146,9 @@ def _status(where: Path) -> int:
                 print(f"  original : {document.original}\n  markdown : {document.markdown or 'introuvable'}")
         for warning in obsidian.warnings(c.root):
             print(f"\n⚠ {warning}")
+        if missing := c.missing_originals():
+            print(f"\n⚠ {missing} original(aux) manquant(s) dans {corpus.ORIGINALS}/ : réimportez leurs fichiers"
+                  " (« paravent import <dossier> »), Paravent les remettra en place.")
         if counts[corpus.TODO]:
             print("\nDes documents restent à convertir : relancez « paravent import » pour reprendre.")
         waiting = ranger.inbox_files(c.inbox)
@@ -159,6 +169,7 @@ class _ImportProgress(corpus.Progress):
 
     def document(self, number: int, total: int, name: str) -> None:
         self.number, self.total, self.name = number, total, name
+        self.pages = 0  # not the previous document's, when this one fails before its first page
         self.started = time.monotonic()
         self.first = self.first or self.started
         if not self.live:
@@ -214,6 +225,33 @@ def _sync_checklist(c: corpus.Corpus) -> None:
     remaining = c.counts()
     if remaining[corpus.REVIEW] or remaining[corpus.FAILED]:
         print(f"Liste à cocher dans Obsidian : « {review.CHECKLIST} », à la racine du corpus.")
+
+
+def _reset(where: Path, assume_yes: bool) -> int:
+    with corpus.Corpus(corpus.find_root(where)) as c:
+        plan = c.reset_plan()
+        print(f"Réinitialiser {c.root} :")
+        print(f"  gardés : les originaux ({corpus.ORIGINALS}/), la liste des {plan['documents']} documents importés,"
+              " les réglages d'Obsidian")
+        print(f"  mis de côté : {plan['entries']} élément(s) à la racine, dont {plan['markdown']} Markdown"
+              f" et {plan['folders']} dossier(s) de rangement (votre rangement et vos corrections)")
+        print(f"  puis les {plan['documents']} documents sont convertis à nouveau, dans {corpus.DOCUMENTS}/{corpus.INBOX}/")
+        if missing := c.missing_originals():
+            print(f"Impossible : {missing} original(aux) manquant(s). Rien n'a été modifié. Réimportez d'abord"
+                  " leurs fichiers (« paravent import <dossier> ») : Paravent les remettra en place.", file=sys.stderr)
+            return 1
+        if not assume_yes and input("Tapez OUI pour confirmer : ").strip() != "OUI":
+            print("Rien n'a été modifié.")
+            return 0
+        backup = c.reset()
+        print(f"Mis de côté dans {backup.relative_to(c.root).as_posix()}/ (à supprimer quand vous voulez).")
+        progress = _ImportProgress()
+        report = c.import_paths([], progress=progress)
+        converted = report.converted
+        print(f"Conversion : {converted[corpus.DONE]} fait · {converted[corpus.REVIEW]} à vérifier"
+              f" · {converted[corpus.FAILED]} en échec" + progress.summary())
+        _sync_checklist(c)
+        return 1 if converted[corpus.FAILED] else 0
 
 
 def _reconvert(where: Path, dry_run: bool) -> int:

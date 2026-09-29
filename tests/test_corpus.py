@@ -348,3 +348,72 @@ def test_cli_reconvertir(root, three_documents, capsys):
     assert cli.main(["reconvertir", "--corpus", str(root)]) == 0
     out = capsys.readouterr().out
     assert "Reconversion : 3 fait · 0 à vérifier · 0 en échec" in out and "Versions précédentes : .corpus/" in out
+
+
+def test_reset_sets_everything_aside_and_converts_again(root, sources, capsys, monkeypatch):
+    from paravent import cli
+
+    with corpus.Corpus(root) as c:
+        c.import_paths([sources / "convocation-native.pdf", sources / "sous-dossier"])
+        c.move(root / "corpus" / "_a-ranger" / "convocation-native.md", "France Travail", "Convocation")
+    (root / "À vérifier.md").write_text("- [x] relu\n", encoding="utf-8")
+    (root / "_banc" / "references").mkdir(parents=True)
+    (root / "_banc" / "references" / "page-01.md").write_text("ma référence", encoding="utf-8")
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "oui")  # not « OUI »: nothing happens
+    assert cli.main(["reinitialiser", "--corpus", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "3 élément(s) à la racine, dont 4 Markdown et 1 dossier(s) de rangement" in out
+    assert "Rien n'a été modifié." in out and (root / "corpus" / "France Travail").exists()
+
+    assert cli.main(["reinitialiser", "--corpus", str(root), "--oui"]) == 0
+    assert "Conversion : 2 fait · 0 à vérifier · 0 en échec" in capsys.readouterr().out
+    assert sorted(p.name for p in root.iterdir()) == [".corpus", ".obsidian", "corpus", "originaux"]
+    assert sorted(p.name for p in (root / "corpus" / "_a-ranger").iterdir()) == ["convocation-native.md",
+                                                                                 "courrier-scanne.md"]
+    backup, = (root / ".corpus" / "reinitialisations").iterdir()
+    assert (backup / "corpus" / "France Travail" / "Convocation.md").is_file()
+    assert (backup / "_banc" / "references" / "page-01.md").read_text(encoding="utf-8") == "ma référence"
+    assert len(list((root / "originaux").iterdir())) == 2
+
+
+def test_import_without_sources_resumes_pending_documents(root, sources, monkeypatch):
+    from paravent import cli
+
+    with corpus.Corpus(root) as c:
+        c.import_paths([sources / "convocation-native.pdf"])
+        c.db.execute("UPDATE documents SET status = 'a_faire'")
+        c.db.commit()
+    assert cli.main(["import", "--corpus", str(root)]) == 0
+    with corpus.Corpus(root) as c:
+        assert c.counts()["fait"] == 1
+
+
+def test_lost_originals_block_a_reset_and_come_back_with_their_files(root, sources, tmp_path, capsys):
+    from paravent import cli
+
+    with corpus.Corpus(root) as c:
+        c.import_paths([sources / "convocation-native.pdf", sources / "sous-dossier"])
+    spare = corpus.create(tmp_path / "Essai")  # another corpus made from the same originals
+    with corpus.Corpus(spare) as c:
+        c.import_paths([root / "originaux"])
+    lost = sorted((root / "originaux").iterdir())[0]
+    lost.unlink()
+    with corpus.Corpus(root) as c:  # what happened: the conversion of the lost one fails
+        c.db.execute("UPDATE documents SET status = 'echec', detail = 'FileNotFoundError' WHERE original = ?",
+                     (f"originaux/{lost.name}",))
+        c.db.commit()
+        assert c.missing_originals() == 1
+        with pytest.raises(corpus.CorpusError, match="manquant"):
+            c.reset()
+    assert cli.main(["reinitialiser", "--corpus", str(root), "--oui"]) == 1
+    assert cli.main(["etat", "--corpus", str(root)]) == 0
+    assert "1 original(aux) manquant(s)" in capsys.readouterr().out
+
+    assert cli.main(["import", "--corpus", str(root), str(spare / "originaux")]) == 0
+    out = capsys.readouterr().out
+    assert "Nouveaux : 0 · déjà dans le corpus : 1 · formats non pris en charge : 0 · originaux restaurés : 1" in out
+    assert "Conversion : 1 fait" in out  # the failed one, converted again
+    with corpus.Corpus(root) as c:
+        assert c.missing_originals() == 0 and c.counts() == {"a_faire": 0, "fait": 2, "echec": 0, "a_verifier": 0}
+    assert not os.access(lost, os.W_OK)  # read-only again

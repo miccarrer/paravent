@@ -40,6 +40,8 @@ ORIGINALS = "originaux"
 DOCUMENTS = "corpus"
 INBOX = "_a-ranger"
 RECONVERSIONS = "reconversions"  # in .corpus/: the previous versions, one folder per run
+RESETS = "reinitialisations"  # in .corpus/: what a reset set aside, one folder per reset
+KEPT_BY_RESET = {ORIGINALS, STATE_DIR, ".obsidian"}
 # A Markdown file written later than its conversion (plus this margin, for file
 # systems that round times) has been edited: a reconversion leaves it alone.
 EDIT_MARGIN = 3  # seconds
@@ -87,6 +89,7 @@ class Progress:
 class ImportReport:
     added: list[Path] = field(default_factory=list)
     duplicates: list[Path] = field(default_factory=list)
+    restored: list[Path] = field(default_factory=list)  # known documents whose original had gone
     unsupported: list[Path] = field(default_factory=list)
     converted: dict[str, int] = field(default_factory=lambda: {DONE: 0, REVIEW: 0, FAILED: 0})
 
@@ -148,7 +151,7 @@ class Corpus:
             if source.suffix.lower() not in SUPPORTED_SUFFIXES:
                 report.unsupported.append(source)
             else:
-                (report.added if self._register(source) else report.duplicates).append(source)
+                getattr(report, self._register(source)).append(source)
                 if source.suffix.lower() == ".eml":
                     # Also for a known e-mail: an interrupted import may have missed its attachments.
                     self._register_attachments(source, report)
@@ -164,8 +167,8 @@ class Corpus:
             progress.converted(status)
         return report
 
-    def _register(self, source: Path) -> bool:
-        """Copy a source file into originaux/ and record it; False if already known."""
+    def _register(self, source: Path) -> str:
+        """Copy a source file into originaux/ and record it: « added », « duplicates » or « restored »."""
         return self._record(_sha256(source), source.name, str(source.resolve()),
                             lambda partial: shutil.copyfile(source, partial))
 
@@ -177,29 +180,34 @@ class Corpus:
             shown = Path(f"{mail}{ATTACHMENT_SEPARATOR}{name}")
             if Path(name).suffix not in SUPPORTED_SUFFIXES:
                 report.unsupported.append(shown)
-            elif self._record(hashlib.sha256(data).hexdigest(), name, str(shown.absolute()),
-                              lambda partial: partial.write_bytes(data), parent=parent):
-                report.added.append(shown)
             else:
-                report.duplicates.append(shown)
+                outcome = self._record(hashlib.sha256(data).hexdigest(), name, str(shown.absolute()),
+                                       lambda partial: partial.write_bytes(data), parent=parent)
+                getattr(report, outcome).append(shown)
 
     def _record(self, digest: str, name: str, source_path: str, write: Callable[[Path], object],
-                parent: str | None = None) -> bool:
-        if self.db.execute("SELECT 1 FROM documents WHERE sha256 = ?", (digest,)).fetchone():
-            return False
+                parent: str | None = None) -> str:
+        known = self.db.execute("SELECT original, status FROM documents WHERE sha256 = ?", (digest,)).fetchone()
+        if known:
+            target = self.root / known["original"]
+            if target.exists():
+                return "duplicates"
+            # The same content (same SHA-256): the lost original is put back, and a failed conversion retried.
+            _write_original(target, write)
+            if known["status"] == FAILED:
+                with self.db:
+                    self.db.execute("UPDATE documents SET status = ?, detail = NULL WHERE sha256 = ?", (TODO, digest))
+            return "restored"
         original = Path(ORIGINALS) / f"{digest[:16]}{Path(name).suffix.lower()}"
         target = self.root / original
         if not target.exists():
-            partial = target.with_name(target.name + ".partiel")
-            write(partial)
-            os.replace(partial, target)
-            target.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
+            _write_original(target, write)
         with self.db:
             self.db.execute(
                 "INSERT INTO documents (sha256, source_name, source_path, original, parent, status, imported_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (digest, name, source_path, original.as_posix(), parent, TODO, _now()))
-        return True
+        return "added"
 
     def _convert(self, row: Mapping, on_page: Callable[[int, int], None]) -> str:
         markdown = row["markdown"]
@@ -226,6 +234,39 @@ class Corpus:
             self.db.execute("UPDATE documents SET status = ?, detail = ?, converted_at = ? WHERE sha256 = ?",
                             (status, detail, _now(), row["sha256"]))
         return status
+
+    # --- reset -----------------------------------------------------------------
+
+    def missing_originals(self) -> int:
+        return sum(not (self.root / row[0]).exists() for row in self.db.execute("SELECT original FROM documents"))
+
+    def reset_plan(self) -> dict[str, int]:
+        """What a reset would set aside, and what it would convert again."""
+        moved = [path for path in self.root.iterdir() if path.name not in KEPT_BY_RESET]
+        markdown = sum(len(list(path.rglob("*.md"))) if path.is_dir() else path.suffix == ".md" for path in moved)
+        folders = sum(1 for path in self.documents_dir.rglob("*") if path.is_dir() and path.name != INBOX) \
+            if self.documents_dir.exists() else 0
+        documents, = self.db.execute("SELECT count(*) FROM documents").fetchone()
+        return {"entries": len(moved), "markdown": markdown, "folders": folders, "documents": documents}
+
+    def reset(self) -> Path:
+        """Start the conversion over: everything but the originals, the state and Obsidian's settings
+        is moved to .corpus/reinitialisations/<date>/, and every document is to be converted again."""
+        if missing := self.missing_originals():
+            raise CorpusError(
+                f"{missing} original(aux) manquant(s) dans {ORIGINALS}/ : leurs documents ne pourraient plus être "
+                "convertis. Rien n'a été modifié. Réimportez d'abord leurs fichiers (« paravent import <dossier> ») : "
+                "Paravent reconnaît leur contenu et remet les originaux en place.")
+        backup = self.root / STATE_DIR / RESETS / _now()[:19].replace(":", "-")
+        backup.mkdir(parents=True)
+        for path in sorted(self.root.iterdir()):
+            if path.name not in KEPT_BY_RESET:
+                shutil.move(path, backup / path.name)
+        self.inbox.mkdir(parents=True)
+        with self.db:
+            self.db.execute("UPDATE documents SET markdown = NULL, status = ?, detail = NULL, converted_at = NULL",
+                            (TODO,))
+        return backup
 
     # --- reconversion ---------------------------------------------------------
 
@@ -474,6 +515,13 @@ def _review_status(pages: list[extract.Page]) -> tuple[str, str | None]:
         elif page.min_confidence is not None and page.min_confidence < extract.LOW_CONFIDENCE:
             reasons.append(f"page {page.number} : confiance OCR {page.min_confidence:.2f}")
     return (REVIEW, " ; ".join(reasons)) if reasons else (DONE, None)
+
+
+def _write_original(target: Path, write: Callable[[Path], object]) -> None:
+    partial = target.with_name(target.name + ".partiel")
+    write(partial)
+    os.replace(partial, target)
+    target.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
 
 
 def _edited(markdown: Path, converted_at: str | None) -> bool:
